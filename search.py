@@ -23,7 +23,6 @@ def fetch_exa_api(payload, api_key, timeout=25):
         print(f"❌ Exa API Error: {e}")
         return []
 
-# 💡 รับ parameter must_have_keywords มาจาก llm
 def search_news_references(query: str, num_results: int = 10, must_have_keywords: list = None, source_url: str = "") -> list:
     if not query.strip() or query == "SKIP_SEARCH": 
         return []
@@ -42,7 +41,6 @@ def search_news_references(query: str, num_results: int = 10, must_have_keywords
     clean_query = query.replace('"', '').replace("'", "")
     clean_source_url = source_url.split('?')[0].rstrip('/').lower() if source_url else ""
 
-    # 🚫 บล็อกโดเมนวิดีโอและโซเชียลเด็ดขาด (Video Ban)
     blacklisted_domains = [
         'youtube.com', 'youtu.be', 'tiktok.com', 'facebook.com', 'instagram.com', 'x.com', 'twitter.com', 
         'vimeo.com', 'dailymotion.com', 'line.me', 'blockdit.com', 'pantip.com',
@@ -61,19 +59,19 @@ def search_news_references(query: str, num_results: int = 10, must_have_keywords
         'bbc.com', 'reuters.com', 'apnews.com', 'sanook.com', 'kapook.com', 'today.line.me'
     ]
 
-    # กระสุน 1: เจาะเว็บรัฐบาล
+    # 💡 กระสุน 1: เจาะเว็บรัฐบาล (ปิด useAutoprompt เพื่อให้ค้นหาตรงตัว ไม่คิดไปเอง)
     payload_gov = {
         "query": clean_query,
-        "useAutoprompt": True,
+        "useAutoprompt": False, 
         "numResults": 10,
         "includeDomains": ["go.th", "antifakenewscenter.com", "sure.factcheckthailand.org", "cofact.org"],
         "contents": { "text": { "maxCharacters": 1500 } }
     }
 
-    # กระสุน 2: เจาะเว็บสื่อมวลชนที่เชื่อถือได้
+    # 💡 กระสุน 2: เจาะเว็บสื่อมวลชนที่เชื่อถือได้
     payload_media = {
         "query": clean_query,
-        "useAutoprompt": True,
+        "useAutoprompt": False,
         "numResults": 15,
         "includeDomains": trusted_media,
         "contents": { "text": { "maxCharacters": 1500 } }
@@ -101,7 +99,7 @@ def search_news_references(query: str, num_results: int = 10, must_have_keywords
         link_lower = link.lower()
         link_clean = link_lower.split('?')[0].rstrip('/')
         
-        # 🚫 กฎเหล็กบล็อกลิงก์วิดีโอ (Video Path Ban)
+        # 🚫 กฎเหล็กบล็อกลิงก์วิดีโอ 
         if re.search(r'/(video|watch|shorts|reel|reels|v)/', link_lower) or 'fb.watch' in link_lower:
             continue
             
@@ -120,19 +118,9 @@ def search_news_references(query: str, num_results: int = 10, must_have_keywords
             
         if link in urls_seen or any(b in domain for b in blacklisted_domains):
             continue
-            
-        # 💡 ตะแกรงร่อนขยะ (Must-have Keywords Filter)
-        text_content = (title + " " + content).lower()
-        if must_have_keywords:
-            is_valid = True
-            for w in must_have_keywords:
-                # ถ้าหาคำบังคับไม่เจอ ถือว่า Exa มั่วมาให้ -> เตะทิ้ง!
-                if w.lower() not in text_content:
-                    is_valid = False
-                    break
-            if not is_valid:
-                continue 
 
+        # 💡 ปลดล็อก: เอา Python Filter (must_have_keywords) ออกไปเลย เพื่อลดความแข็งกระด้าง
+        
         tier = 2
         if domain.endswith('.go.th') or domain.endswith('.gov') or domain.endswith('.ac.th') or domain.endswith('.or.th'):
             tier = 0
