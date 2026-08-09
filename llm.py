@@ -93,12 +93,11 @@ def call_openrouter(prompt: str, system_msg: str) -> dict:
         return {}
 
 # =========================================================
-# ⚡ STEP 1: Search Planner (แต่งประโยคค้นหาล้วนๆ ไม่ต้องสกัดคำบังคับ)
+# ⚡ STEP 1: Search Planner (เหมือนมนุษย์ 100%)
 # =========================================================
 def analyze_intent_and_plan_search(news_text: str) -> tuple:
     text_for_analysis = news_text
-    if "]:\n" in news_text: 
-        text_for_analysis = news_text.split("]:\n")[-1] 
+    if "]:\n" in news_text: text_for_analysis = news_text.split("]:\n")[-1] 
         
     text_chunk = sanitize_for_api(text_for_analysis[:1500])
     current_time_context = get_current_thai_time()
@@ -106,18 +105,19 @@ def analyze_intent_and_plan_search(news_text: str) -> tuple:
     prompt = f"""ข้อความที่ต้องการตรวจสอบ: 
 "{text_chunk}"
 
-หน้าที่: สกัด "ประโยคค้นหา" สำหรับ Semantic Search API
-กฎ:
-1. `search_query`: ให้แต่งเป็น "ประโยคสรุปเหตุการณ์สั้นๆ" ที่อธิบายว่า ใคร ทำอะไร ที่ไหน (เช่น "พลพีร์ สุวรรณฉวี ลงพื้นที่จัดระเบียบสายไฟลงดินที่สุรินทร์")
-2. หากไม่ใช่ข้อกล่าวอ้างหรือข่าวสาร ให้ action = "DROP"
+หน้าที่: สกัด "ประโยคค้นหาภาษาธรรมชาติ (Natural Language Query)" 
+กฎเหล็ก:
+1. `search_query`: ให้แต่งประโยคค้นหาเป็นภาษาพูดที่อธิบายเหตุการณ์ชัดเจน (เช่น "ข่าวพลพีร์ลงพื้นที่จัดระเบียบสายไฟที่สุรินทร์")
+2. ห้ามแยกคีย์เวิร์ดด้วยเว้นวรรค
+3. หากไม่ใช่ข้อกล่าวอ้าง ให้ action = "DROP"
 
 ตอบกลับเป็น JSON รูปแบบนี้เท่านั้น:
 {{
     "action": "SEARCH หรือ DROP",
-    "search_query": "ประโยคค้นหาที่ชัดเจน",
+    "search_query": "ประโยคภาษาธรรมชาติ",
     "topic_summary": "สรุปประเด็นหลัก 1 ประโยค"
 }}"""
-    res_data = call_openrouter(prompt, "Generate a natural language query for AI search. Output strictly in JSON format in THAI.")
+    res_data = call_openrouter(prompt, "Generate a Natural Language Query for semantic search. Output strictly in JSON format in THAI.")
     
     action = res_data.get("action", "SEARCH").upper()
     raw_query = res_data.get("search_query", text_chunk[:80])
@@ -125,11 +125,10 @@ def analyze_intent_and_plan_search(news_text: str) -> tuple:
     topic_summary = res_data.get("topic_summary", "ตรวจสอบข้อเท็จจริง")
     
     if action == "DROP": return "DROP", "", res_data.get("reason", "ไม่ใช่ข่าวสาร"), []
-    # คืนค่า list ว่างแทน must_have_keywords เดิม เพื่อไม่ให้โค้ดส่วนอื่นพัง
     return "SEARCH", clean_query, topic_summary, []
 
 # =========================================================
-# ⚖️ STEP 2: The Analyzer (ให้ AI อ่านเนื้อหาเองเต็มๆ)
+# ⚖️ STEP 2: The Analyzer (ตาข่ายนิรภัยดักจับ "เมนูหน้าเว็บ")
 # =========================================================
 def analyze_news_with_qwen(news_text: str, references: list, current_date: str, source_url: str = "") -> dict:
     clean_claim = sanitize_for_api(news_text[:2000])
@@ -150,25 +149,25 @@ def analyze_news_with_qwen(news_text: str, references: list, current_date: str, 
 หลักฐานที่มีรายละเอียดเชิงลึก:
 {ref_text}
 
-ขั้นตอนการวิเคราะห์:
-1. หากอ้างอิงใดอ่านเนื้อหาแล้วไม่เกี่ยวกับเหตุการณ์นี้ ให้ปัดตกทันที
+ขั้นตอนการวิเคราะห์ (ตาข่ายนิรภัย):
+1. ⚠️ ตรวจจับหน้าเว็บรวมข่าว: หากเนื้อหาในอ้างอิงใดอ่านดูแล้วเหมือนเป็น "เมนูนำทาง (Menu)", "รายการรวมหัวข้อข่าวหลายๆ อัน", หรือไม่มีรายละเอียดเนื้อหาข่าวที่อ่านรู้เรื่อง ให้ถือว่าเป็น "ข้อมูลขยะ (UNRELATED)" ห้ามนำมาอ้างอิงเด็ดขาด!
 2. หากลิงก์ต้นทางเป็นเว็บไซต์รัฐบาล (.go.th) ให้ยึดเจตนาการประกาศของเว็บนั้นเป็นความจริงสูงสุด
-3. พิจารณาที่ "แก่นเหตุการณ์ (Core Event)" หากแหล่งข่าวเจาะจงรายงานตรงกัน ให้ถือเป็นความจริง (ไม่ต้องสนใจว่าพาดหัวข่าวจะใช้คำต่างกันนิดหน่อย)
+3. พิจารณาที่ "แก่นเหตุการณ์ (Core Event)" หากแหล่งข่าวเจาะจงรายงานตรงกัน ให้ถือเป็นความจริง 
 
 เกณฑ์คะแนน: 5=จริง 100%, 4=จริงส่วนใหญ่, 3=ก้ำกึ่ง, 2=บิดเบือน, 1=ปลอม/ไร้หลักฐาน
 
 ตอบกลับเป็น JSON รูปแบบนี้เท่านั้น:
 {{
-    "thought": "ประเมินความสอดคล้องของข้อความกับหลักฐานที่ค้นพบ",
+    "thought": "ตรวจสอบแหล่งข่าว หากอ่านแล้วเหมือนแถบเมนูหรือรายการข่าวรวมให้เตะทิ้ง",
     "verdict_summary": "ฟันธงสั้นๆ 1 ประโยค",
     "facts": ["แก่นความจริงที่พบ"],
     "distortions": ["ข้อบิดเบือน (ถ้ามี)"],
     "ai_insights": "สรุปเหตุผลที่ให้คะแนน",
-    "relevant_ref_ids": [เฉพาะรหัสอ้างอิงที่ยืนยันเหตุการณ์ตรงกัน],
+    "relevant_ref_ids": [เฉพาะรหัสอ้างอิงที่ยืนยันเหตุการณ์ตรงกัน (ห้ามรวมหน้าเมนู/หน้ารวมข่าว)],
     "score": ตัวเลข 1-5
 }}"""
     
-    final_result = call_openrouter(prompt, "You are a logical Fact-Checker. Read the detailed content provided. Output strictly in JSON format in THAI.")
+    final_result = call_openrouter(prompt, "You are a logical Fact-Checker. Strictly REJECT navigational menus and lists of news. Output strictly in JSON format in THAI.")
     if not final_result:
         return validate_ai_response({"ai_insights": "❌ ข้อผิดพลาด: AI ไม่สามารถประมวลผลได้"})
         
