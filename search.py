@@ -4,7 +4,6 @@ import re
 import concurrent.futures
 from urllib.parse import urlparse
 from dotenv import load_dotenv
-from datetime import datetime
 
 load_dotenv()
 
@@ -50,8 +49,7 @@ def is_actual_article(url, title):
     if len(title.strip().split()) <= 2 and len(title) < 20: return False
     return True
 
-# 💡 ตัด target_year ออกไป เพราะเราโยนหน้าที่ดูเวลาให้ AI แล้ว!
-def search_news_references(query: str, locations: list, core_keywords: list, num_results: int = 15, source_url: str = "") -> list:
+def search_news_references(query: str, locations: list, core_keywords: list, target_year: str, num_results: int = 10, source_url: str = "") -> list:
     if not query.strip() or query == "SKIP_SEARCH": return []
     
     exa_api_key = os.getenv("EXA_API_KEY", "").strip()
@@ -118,7 +116,6 @@ def search_news_references(query: str, locations: list, core_keywords: list, num
         title = item.get("title", "").strip() if item.get("title") else "ข่าวที่เกี่ยวข้อง"
         link = item.get("url", "")
         content = item.get("text", "")[:1500] 
-        # 💡 เก็บ Publish Date จาก Exa ไว้อย่างดี เพื่อส่งให้ AI ตรวจห้วงเวลา!
         pub_date = item.get("publishedDate", "ไม่ระบุ")
         
         parsed_url = urlparse(link.lower())
@@ -133,23 +130,44 @@ def search_news_references(query: str, locations: list, core_keywords: list, num
         text_content = (title + " " + content).lower()
         match_score = 0
         
-        # กฎสถานที่: ถ้าข้อความระบุจังหวัด ข่าวที่เจอต้องมีคำนั้น (กันมั่ว)
+        # 1. ด่านสถานที่
         if locations:
             has_location = any(loc.lower() in text_content for loc in locations)
             if not has_location:
                 continue 
+            match_score += 5
             if any(loc.lower() in title.lower() for loc in locations):
-                match_score += 15 # ชื่อจังหวัดอยู่บนพาดหัวข่าว = ตรงประเด็นแน่นอน!
-            else:
-                match_score += 2
+                match_score += 10 
 
-        # กฎแก่นเรื่อง
+        # 2. ด่านเวลา (เตะข่าวเก่าทิ้ง)
+        if target_year:
+            try:
+                ty_th = int(str(target_year).strip())
+                ty_en = ty_th - 543
+                has_target_year = str(ty_th) in text_content or str(ty_en) in text_content
+                old_years = [str(y) for y in range(ty_th - 15, ty_th)] + [str(y) for y in range(ty_en - 15, ty_en)]
+                has_old_year = any(oy in text_content for oy in old_years)
+                
+                if has_old_year and not has_target_year:
+                    continue 
+                elif has_target_year:
+                    match_score += 20 
+            except Exception:
+                pass
+
+        # ⚠️ 3. ด่านแก่นเรื่อง (Core Keywords Gate) - ป้องกันขยะ PDF โผล่มา!
         if core_keywords:
+            has_core = False
             for kw in core_keywords:
                 if kw.lower() in text_content:
-                    match_score += 2
-                if kw.lower() in title.lower():
-                    match_score += 5
+                    has_core = True
+                    match_score += 3
+                    if kw.lower() in title.lower():
+                        match_score += 7 
+            
+            # ถ้าไม่เจอคำแก่นเรื่องเลยแม้แต่คำเดียว (เช่น เป็นเอกสารอื่นที่แค่จังหวัด/ปีตรง) -> เตะทิ้งทันที!
+            if not has_core:
+                continue
 
         is_gov_or_factcheck = domain.endswith('.go.th') or domain.endswith('.gov') or domain.endswith('.ac.th') or domain.endswith('.or.th') or 'antifakenewscenter.com' in domain or 'sure.factcheckthailand.org' in domain or 'cofact.org' in domain
 
@@ -160,6 +178,7 @@ def search_news_references(query: str, locations: list, core_keywords: list, num
         tier = 2
         if is_gov_or_factcheck:
             tier = 0
+            match_score += 3
         elif any(wd in domain for wd in trusted_media):
             tier = 1
 
@@ -167,18 +186,16 @@ def search_news_references(query: str, locations: list, core_keywords: list, num
         processed_results.append({
             'title': title,
             'href': link,
-            'pub_date': pub_date[:10] if pub_date != "ไม่ระบุ" else pub_date, # หั่นเอาเฉพาะ YYYY-MM-DD
+            'pub_date': pub_date[:10] if pub_date != "ไม่ระบุ" else pub_date, 
             'snippet': content,
             'tier': tier,
             'match_score': match_score
         })
         
-    # จัดอันดับ: ความเกี่ยวข้อง (Match Score) สำคัญที่สุด
     processed_results.sort(key=lambda x: (-x['match_score'], x['tier']))
     
     for r in processed_results: 
         r.pop('tier', None)
         r.pop('match_score', None)
         
-    # ส่ง 15 ลิงก์สุดยอดให้ AI เทียบ Semantic และ Timeline
     return processed_results[:num_results]
