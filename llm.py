@@ -93,7 +93,7 @@ def call_openrouter(prompt: str, system_msg: str) -> dict:
         return {}
 
 # =========================================================
-# ⚡ STEP 1: Search Planner (แต่งประโยคให้ Neural Search ทำงาน)
+# ⚡ STEP 1: Search Planner (ระบบคู่หู: Natural Query + Strict Keyword)
 # =========================================================
 def analyze_intent_and_plan_search(news_text: str) -> tuple:
     text_for_analysis = news_text
@@ -106,35 +106,35 @@ def analyze_intent_and_plan_search(news_text: str) -> tuple:
     prompt = f"""ข้อความที่ต้องการตรวจสอบ: 
 "{text_chunk}"
 
-หน้าที่: สกัด "ประโยคค้นหาภาษาธรรมชาติ (Natural Language Query)" เพื่อส่งให้ AI Search Engine
+หน้าที่: สกัด "ประโยคค้นหา (Query)" และ "คำบังคับ (Must-have)" 
 กฎเหล็ก:
-1. `search_query`: ให้แต่งประโยคค้นหาเป็นภาษาพูดหรือพาดหัวข่าวแบบชัดเจน (เช่น "ข่าวเกี่ยวกับรัฐมนตรีพลพีร์ สุวรรณฉวี ลงพื้นที่จัดระเบียบสายไฟลงดินที่จังหวัดสุรินทร์")
-2. ห้ามใช้เครื่องหมาย "ฟันหนู" หรือพิมพ์เป็นคีย์เวิร์ดคั่นด้วยสเปซบาร์เด็ดขาด! ให้เขียนเป็นประโยคที่มนุษย์ใช้พูดกันเลย
-3. ห้ามก๊อปปี้คำว่า "ข่าว" "ล่าสุด" หรือ Header ขยะจากต้นฉบับมาแปะ
+1. `search_query`: ให้แต่งประโยคค้นหาเป็นภาษาพูดที่อธิบายเหตุการณ์ได้ชัดเจน (เช่น "ข่าวรัฐมนตรีพลพีร์ลงพื้นที่จัดระเบียบสายไฟที่สุรินทร์")
+2. `must_have_keywords`: ⚠️ สกัดคำศัพท์ที่เป็น **"คำนามเฉพาะ (Nouns)"** 1-2 คำ ที่เนื้อหาต้องมีเพื่อใช้กรองข่าวที่กว้างเกินไปทิ้ง (เช่น ["สายไฟ", "สุรินทร์"]) ห้ามใช้คำกริยา
+3. หากไม่ใช่ข้อกล่าวอ้าง ให้ action = "DROP"
 
 ตอบกลับเป็น JSON รูปแบบนี้เท่านั้น:
 {{
     "action": "SEARCH หรือ DROP",
-    "search_query": "ประโยคภาษาธรรมชาติที่สรุปใจความสำคัญ (Natural Language)",
+    "search_query": "ประโยคภาษาธรรมชาติ",
+    "must_have_keywords": ["คำนามบังคับที่1", "คำนามบังคับที่2"],
     "topic_summary": "สรุปประเด็นหลัก 1 ประโยค"
 }}"""
-    res_data = call_openrouter(prompt, "You must generate a descriptive Natural Language Query for an AI semantic search engine. NO double quotes. Output strictly in JSON format in THAI.")
+    res_data = call_openrouter(prompt, "Generate a Natural Language Query AND 2 strict mandatory nouns to filter out broad/irrelevant semantic results. Output strictly in JSON format in THAI.")
     
     action = res_data.get("action", "SEARCH").upper()
     raw_query = res_data.get("search_query", text_chunk[:80])
     clean_query = re.sub(r'(ข่าวล่าสุด|รัฐบาลไทย|\||\.\.\.)', '', raw_query).strip()
+    must_have_keywords = res_data.get("must_have_keywords", [])
     topic_summary = res_data.get("topic_summary", "ตรวจสอบข้อเท็จจริง")
     
-    if action == "DROP": return "DROP", "", res_data.get("reason", "ไม่ใช่ข่าวสาร")
-    return "SEARCH", clean_query, topic_summary
+    if action == "DROP": return "DROP", "", res_data.get("reason", "ไม่ใช่ข่าวสาร"), []
+    return "SEARCH", clean_query, topic_summary, must_have_keywords
 
 # =========================================================
-# ⚖️ STEP 2: The Analyzer (ใช้ประโยชน์จากเนื้อหาเต็มของ Exa)
+# ⚖️ STEP 2: The Analyzer
 # =========================================================
 def analyze_news_with_qwen(news_text: str, references: list, current_date: str, source_url: str = "") -> dict:
     clean_claim = sanitize_for_api(news_text[:2000])
-    
-    # 💡 เนื้อหาจาก Exa มีความยาว 1,500 ตัวอักษร ให้ AI อ่านแบบจุใจ
     ref_text = "\n\n".join([f"[อ้างอิง {i+1}]: {r['title']}\nเนื้อหา: {r.get('snippet', '')}" for i, r in enumerate(references)]) if references else "ไม่มีอ้างอิง"
     
     is_official_source = bool(source_url and (".go.th" in source_url.lower() or ".gov" in source_url.lower()))
@@ -149,7 +149,7 @@ def analyze_news_with_qwen(news_text: str, references: list, current_date: str, 
 ข้อความที่ต้องการตรวจสอบ: "{clean_claim}"
 แหล่งที่มาของข้อความนี้: {origin_info}
 
-หลักฐานที่มีรายละเอียดเชิงลึก (ดึงจาก Neural Search):
+หลักฐานที่มีรายละเอียดเชิงลึก:
 {ref_text}
 
 ขั้นตอนการวิเคราะห์:
@@ -170,7 +170,7 @@ def analyze_news_with_qwen(news_text: str, references: list, current_date: str, 
     "score": ตัวเลข 1-5
 }}"""
     
-    final_result = call_openrouter(prompt, "You are a logical Fact-Checker. Read the detailed content provided by Exa AI. Output strictly in JSON format in THAI.")
+    final_result = call_openrouter(prompt, "You are a logical Fact-Checker. Read the detailed content provided. Output strictly in JSON format in THAI.")
     if not final_result:
         return validate_ai_response({"ai_insights": "❌ ข้อผิดพลาด: AI ไม่สามารถประมวลผลได้"})
         
