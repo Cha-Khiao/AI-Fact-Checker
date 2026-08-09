@@ -55,8 +55,8 @@ with st.sidebar:
     
     st.markdown("### 🏛️ สถาปัตยกรรมระบบ")
     st.info("""
-    **🚀 AI Comparative Analysis**
-    ระบบทำงานตามหลักงานวิจัย โดยสืบค้นและคัดกรองข้อมูลจากสื่อหลักและภาครัฐ (Whitelist) ป้องกันเนื้อหาที่ไม่เกี่ยวข้องอย่างเด็ดขาด จากนั้นใช้ LLM เปรียบเทียบความสอดคล้องอย่างเป็นเหตุเป็นผล
+    **🚀 Fair Comparative Analysis**
+    ระบบใช้การคัดกรองที่แม่นยำ (Location & Temporal Regex Filter) เพื่อสกัดข่าวที่ไม่เกี่ยวข้องออกทั้งหมด จากนั้นใช้ AI เปรียบเทียบเนื้อหาอย่างยุติธรรม โดยไม่หักคะแนนหากข้อความต้นฉบับไม่ได้ระบุรายละเอียดเชิงลึก
     """)
     
     with st.expander("ℹ️ มาตรฐานการประเมิน (IFCN)"):
@@ -219,15 +219,15 @@ if news_content:
             else:
                 st.markdown(f"📌 **ประเด็นที่เปรียบเทียบ:** {topic_summary}")
                 
-                smooth_progress(progress_bar, 25, 55, "🌐 ระบบกำลังสืบค้นและคัดกรองเนื้อหาที่ไม่เกี่ยวข้องทิ้งอย่างเด็ดขาด (55%)")
+                smooth_progress(progress_bar, 25, 55, "🌐 ระบบกำลังสืบค้นและสกัดกั้นข่าวที่ไม่เกี่ยวข้องทิ้งอย่างเด็ดขาด (55%)")
                 
                 references = []
                 if search_query:
                     references = cached_search(search_query, locations, core_keywords, target_year, original_url)
                 
-                st.markdown(f"🔎 **ดึงแหล่งข้อมูลมาได้ {len(references)} แหล่ง เพื่อเข้าสู่กระบวนการเปรียบเทียบ**")
-                smooth_progress(progress_bar, 55, 85, "⚖️ AI กำลังวิเคราะห์และเปรียบเทียบเนื้อหาอย่างละเอียด (85%)")
-                st.markdown("⚖️ **กำลังประเมินความสอดคล้อง/ความขัดแย้งของข้อมูล...**")
+                st.markdown(f"🔎 **ดึงแหล่งข้อมูลที่ตรงเป้าหมายมาได้ {len(references)} แหล่ง เพื่อส่งเข้ากระบวนการเปรียบเทียบ**")
+                smooth_progress(progress_bar, 55, 85, "⚖️ AI กำลังวิเคราะห์และเปรียบเทียบเนื้อหาอย่างยุติธรรม (85%)")
+                st.markdown("⚖️ **กำลังประเมินความสอดคล้องของข้อมูล...**")
                 
                 ai_dict = cached_analyze(news_content, references, current_date_str, original_url)
                 if ai_dict:
@@ -267,7 +267,7 @@ if news_content:
                 
         with col2:
             with st.container(border=True):
-                st.markdown("<h4 style='color: #b91c1c;'>❌ ประเด็นที่ขัดแย้ง / ไร้แหล่งอ้างอิง</h4>", unsafe_allow_html=True)
+                st.markdown("<h4 style='color: #b91c1c;'>❌ ประเด็นที่ขัดแย้ง</h4>", unsafe_allow_html=True)
                 dists = result_dict.get("conflicting_points", [])
                 if dists and isinstance(dists, list) and dists[0] != "ไม่พบข้อมูลที่ขัดแย้ง หรือแหล่งอ้างอิงไม่เพียงพอต่อการเปรียบเทียบ":
                     for d in dists: st.markdown(f"- {d}")
@@ -289,15 +289,12 @@ if news_content:
                 for idx, ref in enumerate(references):
                     if any(str(idx + 1) == str(rel_id) for rel_id in rel_ids):
                         verified_refs.append(ref)
-                
-                if not verified_refs and references:
-                    verified_refs = references[:5] 
                     
             if verified_refs:
                 for idx, ref in enumerate(verified_refs):
                     st.markdown(f"{idx+1}. [{ref.get('title', 'ลิงก์อ้างอิง')}]({ref.get('href', '#')})")
             else:
-                st.info("ไม่พบข่าวสารจากสื่อหลัก หรือประกาศจากหน่วยงานรัฐที่มีเนื้อหาสอดคล้องเพียงพอต่อการเปรียบเทียบ จึงประเมินว่าข้อความนี้ขาดหลักฐานสนับสนุน")
+                st.info("ไม่พบข่าวสารจากสื่อหลัก หรือประกาศจากหน่วยงานรัฐที่มีเนื้อหาสอดคล้องเพียงพอต่อการนำมาเปรียบเทียบ (ระบบได้คัดกรองข่าวคนละสถานที่ และข่าวเก่าทิ้งไปอย่างเด็ดขาดแล้ว) จึงประเมินว่าข้อความนี้ขาดหลักฐานสนับสนุน")
 
     try:
         log_input_data = original_url if original_url else news_content
