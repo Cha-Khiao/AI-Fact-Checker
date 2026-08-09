@@ -18,7 +18,8 @@ def cached_extract_text(url): return extract_text_from_url(url)
 @st.cache_data(ttl=3600, show_spinner=False)
 def cached_plan_search(text): return analyze_intent_and_plan_search(text)
 @st.cache_data(ttl=3600, show_spinner=False)
-def cached_search(query, must_have_keywords, source_url=""): return search_news_references(query, num_results=10, must_have_keywords=must_have_keywords, source_url=source_url)
+# 💡 ปลดล็อกระบบ: ไม่ต้องใช้ must_have_keywords อีกต่อไป Exa จัดการเรื่องความแม่นยำเอง
+def cached_search(query, source_url=""): return search_news_references(query, num_results=10, source_url=source_url)
 @st.cache_data(ttl=3600, show_spinner=False)
 def cached_analyze(news_text, references, current_date, source_url=""): return analyze_news_with_qwen(news_text, references, current_date, source_url)
 
@@ -52,8 +53,8 @@ with st.sidebar:
     
     st.markdown("### 🏛️ สถาปัตยกรรมระบบ")
     st.info("""
-    **🚀 ประมวลผลแบบ Real-time (Stateless)**
-    เพื่อประสิทธิภาพและความเร็วสูงสุดในการตรวจสอบ ระบบนี้ถูกออกแบบมาโดย **ไม่ใช้ฐานข้อมูล (No Database)** ข้อมูลที่ท่านตรวจสอบจะไม่ถูกบันทึกเป็นประวัติส่วนตัว เพื่อปกป้องความเป็นส่วนตัวขั้นสูงสุด
+    **🚀 ประมวลผลด้วย Neural Search (Exa AI)**
+    ระบบใช้เทคโนโลยี AI Search ล่าสุดในการทำความเข้าใจบริบทข่าวระดับความหมาย (Semantic) ควบคู่กับฐานข้อมูลภาครัฐและสื่อกระแสหลัก 100% โดยไม่บันทึกประวัติการสืบค้นใดๆ
     """)
     
     with st.expander("ℹ️ มาตรฐานการประเมิน (IFCN)"):
@@ -109,15 +110,6 @@ st.markdown("""<div style='text-align: center; margin-bottom: 2rem;'>
     <h1 style='font-size: 2.5rem; margin-bottom: 0px; color: #1e3a8a;'>🛡️ AI Fact-Checker</h1>
     <p style='font-size: 1.1rem; opacity: 0.8; margin-top: 5px;'>ระบบประเมินความน่าเชื่อถือของข่าวสารด้วยปัญญาประดิษฐ์</p>
     </div>""", unsafe_allow_html=True)
-
-st.write("")
-st.info("""
-**🏛️ มาตรฐานการประเมินและสถาปัตยกรรมระบบ (Methodology & Standards)**
-ระบบนี้ทำงานโดยสกัดข้อเท็จจริงและให้คะแนนตามมาตรฐาน **IFCN (International Fact-Checking Network)** และเกณฑ์ **Truth-O-Meter**:
-* **ความน่าเชื่อถือของแหล่งอ้างอิง:** ระบบถูกตั้งค่าให้อัลกอริทึมค้นหา (Deep Search) ให้ความสำคัญขั้นสูงสุดกับข้อมูลจาก **หน่วยงานรัฐบาล (โดเมน .go.th, .gov), องค์กรระหว่างประเทศ, และสถานทูต** ก่อนสำนักข่าวทั่วไป
-* **กระบวนการทำงานแบบเป็นระบบ:** ทำการจำลองการค้นหาแบบมนุษย์ -> คัดกรองแหล่งอ้างอิง -> วิเคราะห์บริบท -> และตัดสินตามพยานหลักฐานเชิงประจักษ์
-""")
-st.write("") 
 
 tab1, tab2 = st.tabs(["🌐 ตรวจสอบจากลิงก์ (URL)", "📄 ตรวจสอบจากข้อความ"])
 
@@ -214,7 +206,8 @@ if news_content:
             smooth_progress(progress_bar, 5, 25, "🧠 AI กำลังสกัดประเด็นและวางแผนการค้นหา (25%)")
             text_for_keyword = news_content.split("]:\n")[-1] if "[เนื้อหาข่าวจริง" in news_content else news_content
             
-            action, search_query, topic_summary, must_have_keywords = cached_plan_search(text_for_keyword)
+            # 💡 ระบบใหม่จะรับแค่ search_query ที่เป็นประโยคธรรมชาติเท่านั้น
+            action, search_query, topic_summary = cached_plan_search(text_for_keyword)
 
             if action == "DROP":
                 total_time_taken = round(time.time() - start_process_time, 2)
@@ -226,15 +219,15 @@ if news_content:
                 st.markdown(f"📌 **ประเด็นที่วิเคราะห์:** {topic_summary}")
                 
                 if search_query:
-                    st.info(f"🔍 **กลยุทธ์การสืบค้น:** `{search_query}` \n\n🎯 **คำบังคับเพื่อกรองขยะ:** `{must_have_keywords}`")
+                    st.info(f"🔍 **AI Neural Query:** `{search_query}`")
                 
-                smooth_progress(progress_bar, 25, 55, "🌐 กำลังกวาดข้อมูลเจาะลึกจากสื่อหลักและภาครัฐ (55%)")
+                smooth_progress(progress_bar, 25, 55, "🌐 Exa AI กำลังดึงข้อมูลเนื้อหาเต็มจากภาครัฐและสื่อหลัก (55%)")
                 
                 references = []
                 if search_query:
-                    references = cached_search(search_query, must_have_keywords, original_url)
+                    references = cached_search(search_query, original_url)
                 
-                st.markdown(f"🔎 **ดึงข้อมูลอ้างอิงเบื้องต้น (หลังกรองขยะ) จำนวน {len(references)} แหล่ง**")
+                st.markdown(f"🔎 **ดึงเนื้อหาข่าวเชิงลึกได้สมบูรณ์ {len(references)} แหล่ง**")
                 smooth_progress(progress_bar, 55, 85, "⚖️ AI กำลังประมวลผลข้อเท็จจริง และเปรียบเทียบข้อมูล (85%)")
                 st.markdown("⚖️ **กำลังเทียบเคียงหลักฐานกับข้อกล่าวอ้าง...**")
                 
