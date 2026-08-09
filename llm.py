@@ -47,17 +47,17 @@ def parse_json_safely(text: str) -> dict:
 
 def validate_ai_response(parsed_dict: dict, raw_output: str = "") -> dict:
     template = {
-        "verdict_summary": "ไม่สามารถสรุปคำตัดสินได้",
-        "facts": ["ไม่พบข้อมูลส่วนที่เป็นความจริง"],
-        "distortions": ["ไม่พบข้อมูลส่วนที่บิดเบือน หรือข้อมูลไม่เพียงพอ"],
-        "ai_insights": "ระบบไม่สามารถวิเคราะห์เชิงลึกได้อย่างสมบูรณ์",
+        "verdict_summary": "ไม่สามารถเปรียบเทียบข้อมูลได้",
+        "supported_points": ["ไม่พบข้อมูลที่สอดคล้องกับแหล่งอ้างอิง"],
+        "conflicting_points": ["ไม่พบข้อมูลที่ขัดแย้ง หรือแหล่งอ้างอิงไม่เพียงพอต่อการเปรียบเทียบ"],
+        "comparative_analysis": "ระบบไม่สามารถวิเคราะห์เปรียบเทียบเชิงลึกได้อย่างสมบูรณ์",
         "score": 3,
         "relevant_ref_ids": []
     }
     
     if not isinstance(parsed_dict, dict) or not parsed_dict:
         if raw_output:
-            template["ai_insights"] = f"❌ โครงสร้างข้อมูลผิดพลาด\n\n[Raw Data]:\n{raw_output[:500]}"
+            template["comparative_analysis"] = f"❌ โครงสร้างข้อมูลผิดพลาด\n\n[Raw Data]:\n{raw_output[:500]}"
         return template
         
     for key in template.keys():
@@ -102,25 +102,30 @@ def analyze_intent_and_plan_search(news_text: str) -> tuple:
         
     text_chunk = sanitize_for_api(text_for_analysis[:1500])
     
+    tz = pytz.timezone('Asia/Bangkok')
+    current_year_th = datetime.now(tz).year + 543
+    
     prompt = f"""ข้อความที่ต้องการตรวจสอบ: 
 "{text_chunk}"
 
 หน้าที่: สกัด "ประโยคค้นหา" และ "ข้อมูลสำหรับคัดกรองเบื้องต้น"
 กฎ:
-1. `search_query`: แต่งประโยคพาดหัวข่าวภาษาธรรมชาติเพื่อหาข่าว (ห้ามมีเลขปี พ.ศ. ในประโยคค้นหาเด็ดขาด เพื่อป้องกันการบล็อกข่าวใหม่ๆ)
-2. `locations`: สกัด "สถานที่/จังหวัด" เพื่อใช้เป็นด่านสกัดกั้น หากไม่มีให้เว้นว่าง []
-3. `core_keywords`: สกัดแก่นของเรื่อง และ "คำพ้องความหมาย" รวมกัน 3-5 คำ
-4. หากข้อความไม่มีเนื้อหาสาระ ให้ action = "DROP"
+1. `search_query`: แต่งประโยคค้นหาพาดหัวข่าวภาษาธรรมชาติ (ห้ามมีเลขปี พ.ศ.)
+2. `locations`: สกัด "สถานที่ระดับมหภาค" (ชื่อจังหวัด, ประเทศ) 
+3. `core_keywords`: สกัดแก่นของเรื่อง (3-5 คำ) หากมีรายละเอียดหน่วยย่อย (ชื่อตำบล, เฟส) ให้ใส่มาด้วย แต่ถ้าข้อความต้นฉบับพูดกว้างๆ 'ห้ามแต่งเติมรายละเอียดย่อยเองเด็ดขาด'
+4. `target_year`: สกัด "ปี พ.ศ." (ตัวเลข 4 หลัก) ถ้าไม่มีให้ใช้ '{current_year_th}'
+5. หากข้อความไม่มีเนื้อหาสาระ ให้ action = "DROP"
 
 ตอบกลับเป็น JSON รูปแบบนี้เท่านั้น:
 {{
     "action": "SEARCH หรือ DROP",
-    "search_query": "ประโยคพาดหัวข่าว",
-    "locations": ["สถานที่หลัก", "คำพ้อง/ฉายา"],
-    "core_keywords": ["คำแก่นเรื่อง1", "คำพ้อง2"],
+    "search_query": "ประโยคค้นหา",
+    "locations": ["จังหวัด"],
+    "core_keywords": ["คำแก่นเรื่อง", "รายละเอียดเฉพาะ(ถ้ามี)"],
+    "target_year": "2569",
     "topic_summary": "สรุปประเด็นหลัก 1 ประโยค"
 }}"""
-    res_data = call_openrouter(prompt, "Extract query, locations, and keywords. Output strictly in JSON format in THAI.")
+    res_data = call_openrouter(prompt, "Extract query, locations, core keywords. Do not hallucinate micro-details if not present. Output strictly in JSON format in THAI.")
     
     action = res_data.get("action", "SEARCH").upper()
     raw_query = res_data.get("search_query", text_chunk[:80])
@@ -128,54 +133,58 @@ def analyze_intent_and_plan_search(news_text: str) -> tuple:
     
     locations = res_data.get("locations", [])
     core_keywords = res_data.get("core_keywords", [])
-    topic_summary = res_data.get("topic_summary", "ตรวจสอบข้อเท็จจริง")
+    target_year = str(res_data.get("target_year", current_year_th)).strip()
+    topic_summary = res_data.get("topic_summary", "เปรียบเทียบและวิเคราะห์เนื้อหา")
     
-    if action == "DROP": return "DROP", "", res_data.get("reason", "ไม่ใช่ข่าวสาร"), [], []
-    return "SEARCH", clean_query, topic_summary, locations, core_keywords
+    if action == "DROP": return "DROP", "", res_data.get("reason", "ไม่ใช่เนื้อหาที่สามารถเปรียบเทียบได้"), [], [], ""
+    return "SEARCH", clean_query, topic_summary, locations, core_keywords, target_year
 
 # =========================================================
-# ⚖️ STEP 2: The Analyzer (เปรียบเทียบ Semantic & Timeline)
+# ⚖️ STEP 2: The Analyzer (ระบบตรรกะ Broad-to-Specific)
 # =========================================================
 def analyze_news_with_qwen(news_text: str, references: list, current_date: str, source_url: str = "") -> dict:
     clean_claim = sanitize_for_api(news_text[:2000])
     
-    # 💡 แนบ "วันที่ตีพิมพ์" ไปให้ AI อ่านด้วย เพื่อเทียบไทม์ไลน์!
     ref_text = "\n\n".join([f"[อ้างอิง {i+1}]: {r['title']} | วันที่ลงข่าว: {r.get('pub_date', 'ไม่ระบุ')}\nเนื้อหา: {r.get('snippet', '')}" for i, r in enumerate(references)]) if references else "ไม่มีอ้างอิง"
     
     is_official_source = bool(source_url and (".go.th" in source_url.lower() or ".gov" in source_url.lower() or 'antifakenewscenter.com' in source_url.lower()))
     origin_info = f"ดึงมาจากเว็บไซต์ทางการ (Official Source): {source_url}" if is_official_source else "ข้อความทั่วไป / โซเชียลมีเดีย"
     current_time_context = get_current_thai_time()
 
-    prompt = f"""คุณคือนักตรวจสอบข้อเท็จจริง (Fact-Checker)
+    prompt = f"""คุณคือ AI ผู้เชี่ยวชาญด้านการวิเคราะห์และเปรียบเทียบข้อมูล (Multi-Source Comparative Analyst)
+เปรียบเทียบให้เห็นชัดเจนว่าข้อความต้นฉบับ สอดคล้องหรือขัดแย้งกับ 'สื่อหลักและภาครัฐ' อย่างไร
+
 เวลาปัจจุบัน: {current_time_context}
-ข้อความที่ต้องการตรวจสอบ: "{clean_claim}"
+[ข้อความต้นฉบับที่ต้องการประเมิน]: "{clean_claim}"
 แหล่งที่มาของข้อความ: {origin_info}
 
-หลักฐานที่ระบบสืบค้นมา (พร้อมวันที่ลงข่าว):
+[แหล่งข้อมูลอ้างอิง 10 อันดับแรกที่ระบบดึงมาให้]:
 {ref_text}
 
-การประเมินความสอดคล้อง (Semantic & Temporal Alignment):
-ในการคัดเลือกรหัสอ้างอิง (relevant_ref_ids) คุณต้องประเมิน 2 มิติอย่างเข้มงวด:
-1. ⏰ ห้วงเวลา (Timeline): สำนักข่าวย่อมแย่งกันลงข่าว ดังนั้น 'วันที่ลงข่าว' ของอ้างอิงต้องอยู่ในห้วงเวลาใกล้เคียงกันกับข้อกล่าวอ้าง หรือเป็นการอัปเดตต่อเนื่อง หากอ้างอิงเป็นข่าวเมื่อหลายปีก่อน (เช่น ข่าวปี 61 แต่ตอนนี้ปี 69) ให้ถือว่า "คนละเหตุการณ์" และปัดตกทันที!
-2. 🧠 ความหมาย (Semantic Similarity): โครงสร้าง 'ใคร ทำอะไร ที่ไหน' ต้องเหมือนกัน! ข่าวที่มีคีย์เวิร์ดเหมือนกันแต่เกิดคนละจังหวัด หรือคนละสาเหตุ ให้ถือว่า "ไม่เกี่ยวข้อง" และปัดตกทันที!
-3. 🏛️ กฎรัฐบาล: หากแหล่งที่มาของข้อความคือ 'เว็บไซต์ทางการ (Official Source)' ให้คุณประเมินคะแนนความจริง=5 (จริง 100%) ทันที แม้จะหาอ้างอิงที่ตรงกันในลิสต์ไม่เจอเลยก็ตาม
+กระบวนการวิเคราะห์เปรียบเทียบ (CRITICAL LOGIC):
+1. 🔍 กฎการเปรียบเทียบระดับย่อย (Broad vs Specific Match):
+   - ✅ 'สอดคล้อง (Supported)': หากข้อความต้นฉบับพูดกว้างๆ (เช่น บอกแค่ชื่อจังหวัด) แต่แหล่งอ้างอิงระบุรายละเอียดลึกกว่า (เช่น ชื่อตำบล, อำเภอ, เฟสโครงการ) ให้ถือว่า "สอดคล้องกันอย่างสมบูรณ์"! ห้ามมองว่าเป็นข้อขัดแย้ง และห้ามหักคะแนนเด็ดขาด!
+   - ❌ 'ขัดแย้ง (Conflicting)': จะถือว่าขัดแย้งก็ต่อเมื่อ ทั้งสองฝั่งระบุรายละเอียดย่อย "ต่างกันอย่างชัดเจน" (เช่น ต้นฉบับระบุว่าอำเภอ A แต่อ้างอิงระบุว่าอำเภอ B)
+2. 📌 การนำเสนอข้อขัดแย้ง: ห้ามเขียนว่า "ไม่มีข้อมูลเฉพาะเจาะจงระดับตำบลในข้อความต้นฉบับ" ลงใน conflicting_points การที่ต้นฉบับไม่ได้ระบุรายละเอียด ไม่ใช่ความผิดของต้นฉบับ
+3. 🏛️ น้ำหนักแหล่งข้อมูล: หากอ้างอิงมาจากเว็บรัฐ หรือเป็นประกาศอย่างเป็นทางการ ให้ยึดถือน้ำหนักความจริงเป็นสูงสุด (Score=5)
 
-เกณฑ์คะแนน: 5=จริง 100%, 4=จริงส่วนใหญ่, 3=ก้ำกึ่ง, 2=บิดเบือน, 1=ปลอม/ไร้หลักฐาน
+เกณฑ์คะแนน: 
+5=สอดคล้องกับสื่อหลัก 100%, 4=สอดคล้องส่วนใหญ่, 3=ก้ำกึ่ง/ไม่ชัดเจน, 2=ขัดแย้งเป็นส่วนใหญ่, 1=ขัดแย้ง 100% (ข่าวปลอม)
 
 ตอบกลับเป็น JSON รูปแบบนี้เท่านั้น:
 {{
-    "thought": "1. วิเคราะห์ความสอดคล้องของห้วงเวลา (Timeline) 2. วิเคราะห์ความเหมือนของเหตุการณ์ (Semantic)",
-    "verdict_summary": "ฟันธงสั้นๆ 1 ประโยค",
-    "facts": ["แก่นความจริงที่พบ"],
-    "distortions": ["ข้อบิดเบือน (ถ้ามี)"],
-    "ai_insights": "สรุปเหตุผลที่ให้คะแนน",
-    "relevant_ref_ids": [ระบุเฉพาะรหัสอ้างอิงที่ผ่านเกณฑ์ 'ห้วงเวลา' และ 'ความหมาย' เท่านั้น ห้ามใส่ข่าวเก่าหรือข่าวคนละเหตุการณ์มาเด็ดขาด!],
+    "thought": "เทียบระดับ Broad-to-Specific ห้ามหักคะแนนถ้าต้นฉบับแค่พูดกว้างๆ กว่าข่าวอ้างอิง",
+    "verdict_summary": "สรุปผลการเปรียบเทียบ 1 ประโยค",
+    "supported_points": ["ประเด็นที่สอดคล้องกับแหล่งอ้างอิง"],
+    "conflicting_points": ["ประเด็นที่ขัดแย้ง (ใส่เฉพาะข้อมูลที่ขัดแย้งกันจริงๆ ห้ามใส่เรื่องที่ต้นฉบับแค่ไม่ได้ระบุรายละเอียด)"],
+    "comparative_analysis": "อธิบายผลการเปรียบเทียบเชิงลึกอย่างมีเหตุผล",
+    "relevant_ref_ids": [ระบุรหัสอ้างอิงของข่าวที่นำมาเปรียบเทียบทั้งหมด],
     "score": ตัวเลข 1-5
 }}"""
     
-    final_result = call_openrouter(prompt, "You are an AI Semantic and Temporal Matcher. Only include references that MATCH the timeline (close proximity) and the exact event context. Output strictly in JSON format in THAI.")
+    final_result = call_openrouter(prompt, "You are a Comparative Analyst. Apply Broad-to-Specific logic: Do NOT penalize the original text if it is broader than the references. Output strictly in JSON format in THAI.")
     if not final_result:
-        return validate_ai_response({"ai_insights": "❌ ข้อผิดพลาด: AI ไม่สามารถประมวลผลได้"})
+        return validate_ai_response({"comparative_analysis": "❌ ข้อผิดพลาด: AI ไม่สามารถประมวลผลการเปรียบเทียบได้"})
         
     return validate_ai_response(final_result)
 
