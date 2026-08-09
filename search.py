@@ -4,6 +4,7 @@ import re
 import concurrent.futures
 from urllib.parse import urlparse
 from dotenv import load_dotenv
+from datetime import datetime
 
 load_dotenv()
 
@@ -49,8 +50,8 @@ def is_actual_article(url, title):
     if len(title.strip().split()) <= 2 and len(title) < 20: return False
     return True
 
-# 💡 รับ target_year มาใช้หักคะแนนข่าวเก่า
-def search_news_references(query: str, locations: list, core_keywords: list, target_year: str, num_results: int = 15, source_url: str = "") -> list:
+# 💡 ตัด target_year ออกไป เพราะเราโยนหน้าที่ดูเวลาให้ AI แล้ว!
+def search_news_references(query: str, locations: list, core_keywords: list, num_results: int = 15, source_url: str = "") -> list:
     if not query.strip() or query == "SKIP_SEARCH": return []
     
     exa_api_key = os.getenv("EXA_API_KEY", "").strip()
@@ -117,6 +118,7 @@ def search_news_references(query: str, locations: list, core_keywords: list, tar
         title = item.get("title", "").strip() if item.get("title") else "ข่าวที่เกี่ยวข้อง"
         link = item.get("url", "")
         content = item.get("text", "")[:1500] 
+        # 💡 เก็บ Publish Date จาก Exa ไว้อย่างดี เพื่อส่งให้ AI ตรวจห้วงเวลา!
         pub_date = item.get("publishedDate", "ไม่ระบุ")
         
         parsed_url = urlparse(link.lower())
@@ -131,7 +133,7 @@ def search_news_references(query: str, locations: list, core_keywords: list, tar
         text_content = (title + " " + content).lower()
         match_score = 0
         
-        # 1. 📍 สถานที่: ต้องมี และถ้าอยู่ใน "พาดหัวข่าว" จะได้คะแนนทะลุหลอด (กันพวกติ่งโฆษณาด้านข้าง)
+        # กฎสถานที่: ถ้าข้อความระบุจังหวัด ข่าวที่เจอต้องมีคำนั้น (กันมั่ว)
         if locations:
             has_location = any(loc.lower() in text_content for loc in locations)
             if not has_location:
@@ -139,31 +141,15 @@ def search_news_references(query: str, locations: list, core_keywords: list, tar
             if any(loc.lower() in title.lower() for loc in locations):
                 match_score += 15 # ชื่อจังหวัดอยู่บนพาดหัวข่าว = ตรงประเด็นแน่นอน!
             else:
-                match_score += 2  # อยู่แค่ในเนื้อหา ได้คะแนนน้อยลง
+                match_score += 2
 
-        # 2. 📝 แก่นเรื่อง
+        # กฎแก่นเรื่อง
         if core_keywords:
             for kw in core_keywords:
                 if kw.lower() in text_content:
                     match_score += 2
                 if kw.lower() in title.lower():
-                    match_score += 5 # คำแก่นเรื่องอยู่บนพาดหัวข่าว = สุดยอด!
-
-        # 3. ⏰ ไทม์ไลน์: สไนเปอร์ยิงข่าวเก่าทิ้ง!
-        if target_year:
-            target_year_str = str(target_year).strip()
-            if target_year_str in text_content:
-                match_score += 20 # ปีตรงเผง เอาแชมป์ไปเลย!
-            else:
-                # ถ้าปีไม่ตรงเช็กซิว่ามีตัวเลขปีเก่าๆ โผล่มาไหม
-                try:
-                    ty_int = int(target_year_str)
-                    # สร้าง List ปีเก่า (เช่น 2550 ถึง ปีก่อนหน้า)
-                    old_years = [str(y) for y in range(2550, ty_int)] + [str(y - 543) for y in range(2550, ty_int)]
-                    if any(oy in text_content for oy in old_years):
-                        match_score -= 50 # โดนหัก 50 คะแนน ตกไปอยู่บ๊วยสุดทันที!
-                except:
-                    pass
+                    match_score += 5
 
         is_gov_or_factcheck = domain.endswith('.go.th') or domain.endswith('.gov') or domain.endswith('.ac.th') or domain.endswith('.or.th') or 'antifakenewscenter.com' in domain or 'sure.factcheckthailand.org' in domain or 'cofact.org' in domain
 
@@ -174,7 +160,6 @@ def search_news_references(query: str, locations: list, core_keywords: list, tar
         tier = 2
         if is_gov_or_factcheck:
             tier = 0
-            # ลบโบนัสมหาศาลของเว็บรัฐออก ให้แข่งกันที่ความตรงประเด็น (match_score) เป็นหลัก
         elif any(wd in domain for wd in trusted_media):
             tier = 1
 
@@ -182,19 +167,18 @@ def search_news_references(query: str, locations: list, core_keywords: list, tar
         processed_results.append({
             'title': title,
             'href': link,
-            'pub_date': pub_date,
+            'pub_date': pub_date[:10] if pub_date != "ไม่ระบุ" else pub_date, # หั่นเอาเฉพาะ YYYY-MM-DD
             'snippet': content,
             'tier': tier,
             'match_score': match_score
         })
         
-    # ⚠️ ปฏิวัติการจัดอันดับ: ความเกี่ยวข้อง (Match Score) ต้องมาก่อน ยศถาบรรดาศักดิ์ (Tier) เอาไว้ทีหลัง!
-    # สื่อหลักที่เขียนข่าวได้ตรงประเด็นที่สุด จะชนะเว็บรัฐบาลที่มีแต่ข่าวเก่า!
+    # จัดอันดับ: ความเกี่ยวข้อง (Match Score) สำคัญที่สุด
     processed_results.sort(key=lambda x: (-x['match_score'], x['tier']))
     
     for r in processed_results: 
         r.pop('tier', None)
         r.pop('match_score', None)
         
-    # ส่ง 15 ลิงก์สุดยอดให้ AI อ่าน (เหลือเฟือสำหรับ Token)
+    # ส่ง 15 ลิงก์สุดยอดให้ AI เทียบ Semantic และ Timeline
     return processed_results[:num_results]
