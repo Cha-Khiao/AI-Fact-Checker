@@ -18,8 +18,8 @@ def cached_extract_text(url): return extract_text_from_url(url)
 @st.cache_data(ttl=3600, show_spinner=False)
 def cached_plan_search(text): return analyze_intent_and_plan_search(text)
 @st.cache_data(ttl=3600, show_spinner=False)
-# 💡 ปลดล็อกระบบ: ไม่ต้องใช้ must_have_keywords อีกต่อไป Exa จัดการเรื่องความแม่นยำเอง
-def cached_search(query, source_url=""): return search_news_references(query, num_results=10, source_url=source_url)
+# 💡 รับ Must-have keywords เพื่อส่งไปคุมกำเนิด Exa AI
+def cached_search(query, must_have_keywords, source_url=""): return search_news_references(query, num_results=10, must_have_keywords=must_have_keywords, source_url=source_url)
 @st.cache_data(ttl=3600, show_spinner=False)
 def cached_analyze(news_text, references, current_date, source_url=""): return analyze_news_with_qwen(news_text, references, current_date, source_url)
 
@@ -53,8 +53,8 @@ with st.sidebar:
     
     st.markdown("### 🏛️ สถาปัตยกรรมระบบ")
     st.info("""
-    **🚀 ประมวลผลด้วย Neural Search (Exa AI)**
-    ระบบใช้เทคโนโลยี AI Search ล่าสุดในการทำความเข้าใจบริบทข่าวระดับความหมาย (Semantic) ควบคู่กับฐานข้อมูลภาครัฐและสื่อกระแสหลัก 100% โดยไม่บันทึกประวัติการสืบค้นใดๆ
+    **🚀 ประมวลผลด้วย Hybrid Search (Exa AI + Python Strict Filter)**
+    กวาดข้อมูลเชิงลึกด้วย Neural Search ควบคู่กับระบบตะแกรงร่อนขยะและบล็อกวิดีโอ เพื่อให้ได้อ้างอิงที่เป็น "บทความข่าวสารเชิงประจักษ์" จากภาครัฐและสื่อหลัก 100%
     """)
     
     with st.expander("ℹ️ มาตรฐานการประเมิน (IFCN)"):
@@ -206,8 +206,8 @@ if news_content:
             smooth_progress(progress_bar, 5, 25, "🧠 AI กำลังสกัดประเด็นและวางแผนการค้นหา (25%)")
             text_for_keyword = news_content.split("]:\n")[-1] if "[เนื้อหาข่าวจริง" in news_content else news_content
             
-            # 💡 ระบบใหม่จะรับแค่ search_query ที่เป็นประโยคธรรมชาติเท่านั้น
-            action, search_query, topic_summary = cached_plan_search(text_for_keyword)
+            # 💡 รับ must_have_keywords มาด้วย
+            action, search_query, topic_summary, must_have_keywords = cached_plan_search(text_for_keyword)
 
             if action == "DROP":
                 total_time_taken = round(time.time() - start_process_time, 2)
@@ -219,13 +219,14 @@ if news_content:
                 st.markdown(f"📌 **ประเด็นที่วิเคราะห์:** {topic_summary}")
                 
                 if search_query:
-                    st.info(f"🔍 **AI Neural Query:** `{search_query}`")
+                    st.info(f"🔍 **AI Neural Query:** `{search_query}`\n\n🎯 **คำบังคับ (กรองข่าวหลง):** `{must_have_keywords}`")
                 
                 smooth_progress(progress_bar, 25, 55, "🌐 Exa AI กำลังดึงข้อมูลเนื้อหาเต็มจากภาครัฐและสื่อหลัก (55%)")
                 
                 references = []
                 if search_query:
-                    references = cached_search(search_query, original_url)
+                    # 💡 ส่ง must_have_keywords ไปคุมกำเนิดลิงก์ขยะ
+                    references = cached_search(search_query, must_have_keywords, original_url)
                 
                 st.markdown(f"🔎 **ดึงเนื้อหาข่าวเชิงลึกได้สมบูรณ์ {len(references)} แหล่ง**")
                 smooth_progress(progress_bar, 55, 85, "⚖️ AI กำลังประมวลผลข้อเท็จจริง และเปรียบเทียบข้อมูล (85%)")
