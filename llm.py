@@ -93,7 +93,7 @@ def call_openrouter(prompt: str, system_msg: str) -> dict:
         return {}
 
 # =========================================================
-# ⚡ STEP 1: Search Planner (บังคับคงชื่อทางการของรัฐไว้)
+# ⚡ STEP 1: Search Planner (เพิ่ม target_year)
 # =========================================================
 def analyze_intent_and_plan_search(news_text: str) -> tuple:
     text_for_analysis = news_text
@@ -101,76 +101,83 @@ def analyze_intent_and_plan_search(news_text: str) -> tuple:
         text_for_analysis = news_text.split("]:\n")[-1] 
         
     text_chunk = sanitize_for_api(text_for_analysis[:1500])
+    
+    tz = pytz.timezone('Asia/Bangkok')
+    current_year_th = datetime.now(tz).year + 543
     current_time_context = get_current_thai_time()
     
     prompt = f"""ข้อความที่ต้องการตรวจสอบ: 
 "{text_chunk}"
 
-หน้าที่: สกัด "ประโยคค้นหา (Search Query)"
-กฎระดับผู้เชี่ยวชาญ:
-1. ⚠️ รักษารูปแบบคำทางการ (Formal Terms): หากข้อความเกี่ยวกับนโยบายรัฐ หรือมีชื่อโครงการ/ชื่อยศตำแหน่ง ให้ **"คงชื่อทางการไว้เป๊ะๆ"** (เช่น 'โครงการจัดระเบียบสายไฟฟ้าลงดิน') ห้ามย่อเป็นภาษาพูด เพราะจะทำให้หาในเว็บ .go.th ไม่เจอ
-2. ⚠️ ลบตัวเลขสถิติ จำนวนคน และปีปัจจุบันทิ้งให้หมด เพื่อให้ค้นหาได้กว้างขึ้น
-3. แต่งเป็นประโยคพาดหัวข่าวภาษาธรรมชาติที่สมบูรณ์ ห้ามแยกเป็นคีย์เวิร์ด
-4. ลบคำขยะโซเชียลทิ้ง (Facebook, Twitter)
-5. หากไม่ใช่ข้อกล่าวอ้าง ให้ action = "DROP"
+หน้าที่: สกัด "ประโยคค้นหา" และ "ข้อมูลสำหรับจัดคะแนน (Scoring)"
+กฎ:
+1. `search_query`: แต่งประโยคพาดหัวข่าวภาษาธรรมชาติเพื่อหาข่าว (ห้ามมีเลขปีในประโยคนี้)
+2. `locations`: สกัด "สถานที่/จังหวัด" เพื่อใช้เป็นด่านสกัดกั้น หากไม่มีให้เว้นว่าง []
+3. `core_keywords`: สกัดแก่นของเรื่อง และ "คำพ้องความหมาย" รวมกัน 3-5 คำ
+4. `target_year`: ⚠️ สกัด "ปี พ.ศ. หรือ ค.ศ." ที่เกิดเหตุการณ์ในข้อความ (ตัวเลข 4 หลัก) หากในข้อความไม่ได้ระบุปี ให้ใช้ปีปัจจุบันคือ '{current_year_th}'
+5. หากข้อความไม่มีเนื้อหาสาระ ให้ action = "DROP"
 
 ตอบกลับเป็น JSON รูปแบบนี้เท่านั้น:
 {{
     "action": "SEARCH หรือ DROP",
-    "search_query": "ประโยคพาดหัวข่าว (คงคำศัพท์ทางการไว้)",
+    "search_query": "ประโยคพาดหัวข่าว",
+    "locations": ["สถานที่หลัก", "คำพ้อง/ฉายา"],
+    "core_keywords": ["คำแก่นเรื่อง1", "คำพ้อง2"],
+    "target_year": "2569",
     "topic_summary": "สรุปประเด็นหลัก 1 ประโยค"
 }}"""
-    res_data = call_openrouter(prompt, "Generate a descriptive natural language query. MUST retain formal government terms and project names. Output strictly in JSON format in THAI.")
+    res_data = call_openrouter(prompt, "Extract query, locations, keywords, and SPECIFICALLY the target year (4 digits). Output strictly in JSON format in THAI.")
     
     action = res_data.get("action", "SEARCH").upper()
     raw_query = res_data.get("search_query", text_chunk[:80])
     clean_query = re.sub(r'(?i)(facebook|fb|twitter|x|tiktok|youtube|ข่าวล่าสุด|รัฐบาลไทย|\||\.\.\.)', '', raw_query).strip()
     
+    locations = res_data.get("locations", [])
+    core_keywords = res_data.get("core_keywords", [])
+    target_year = str(res_data.get("target_year", "")).strip()
     topic_summary = res_data.get("topic_summary", "ตรวจสอบข้อเท็จจริง")
     
-    if action == "DROP": return "DROP", "", res_data.get("reason", "ไม่ใช่ข่าวสาร")
-    return "SEARCH", clean_query, topic_summary
+    if action == "DROP": return "DROP", "", res_data.get("reason", "ไม่ใช่ข่าวสาร"), [], [], ""
+    return "SEARCH", clean_query, topic_summary, locations, core_keywords, target_year
 
 # =========================================================
-# ⚖️ STEP 2: The Analyzer
+# ⚖️ STEP 2: The Analyzer (วิเคราะห์รอบด้าน)
 # =========================================================
 def analyze_news_with_qwen(news_text: str, references: list, current_date: str, source_url: str = "") -> dict:
     clean_claim = sanitize_for_api(news_text[:2000])
     ref_text = "\n\n".join([f"[อ้างอิง {i+1}]: {r['title']}\nเนื้อหา: {r.get('snippet', '')}" for i, r in enumerate(references)]) if references else "ไม่มีอ้างอิง"
     
-    is_official_source = bool(source_url and (".go.th" in source_url.lower() or ".gov" in source_url.lower()))
+    is_official_source = bool(source_url and (".go.th" in source_url.lower() or ".gov" in source_url.lower() or 'antifakenewscenter.com' in source_url.lower()))
     origin_info = f"ดึงมาจากเว็บไซต์ทางการ (Official Source): {source_url}" if is_official_source else "ข้อความทั่วไป / โซเชียลมีเดีย"
     current_time_context = get_current_thai_time()
-
-    if not references and not is_official_source:
-        return validate_ai_response({"verdict_summary": "ไม่มีแหล่งข่าวใดนำเสนอเรื่องนี้", "score": 1, "ai_insights": "ระบบไม่พบข้อมูลในสารบบสื่อหลัก คาดว่าเป็นข่าวลือที่แต่งขึ้นมาเอง"})
 
     prompt = f"""คุณคือนักตรวจสอบข้อเท็จจริง (Fact-Checker)
 เวลาปัจจุบัน: {current_time_context}
 ข้อความที่ต้องการตรวจสอบ: "{clean_claim}"
+แหล่งที่มาของข้อความนี้: {origin_info}
 
-หลักฐานทั้งหมดที่สืบค้นมา:
+หลักฐานที่ผ่านการคัดกรองมาแล้ว (จัดอันดับตามความเกี่ยวข้องสูงสุด):
 {ref_text}
 
-ขั้นตอนการวิเคราะห์:
-1. ⚠️ การเลือกรหัสอ้างอิง: ให้เลือกรหัสอ้างอิง 'ทั้งหมด' ที่รายงานเหตุการณ์เดียวกันเป๊ะๆ (แม้ตัวเลขสถิติอาจจะคลาดเคลื่อนเล็กน้อยก็ให้ถือว่าเป็นเหตุการณ์เดียวกัน) 
-2. ❌ ห้ามอ้างอิงข่าวที่มีแค่คำเหมือนแต่คนละบริบทเด็ดขาด
-3. หากมีลิงก์จากเว็บไซต์รัฐบาล (.go.th) ให้ยึดถือข้อมูลนั้นเป็นความจริงสูงสุด
+กฎเหล็กขั้นสูงสุด:
+1. 🏛️ แหล่งที่มาคือรัฐบาล: หากแหล่งที่มาระบุว่าเป็น Official Source ให้คุณเชื่อมั่น 100% ว่าเป็นความจริง (คะแนน 5) 
+2. 💡 การเลือกหลักฐาน: ข่าวที่ถูกส่งมานี้ผ่านการคัดกรองสถานที่และเวลามาแล้ว ให้คุณรวบรวมรหัสอ้างอิงของข่าวที่ 'เกี่ยวข้องในบริบทเดียวกัน' มาให้หมด เพื่อให้ผู้ใช้ได้รับข้อมูลรอบด้าน
+3. การระบุข้อเท็จจริง: หากข่าวมีรายละเอียดปลีกย่อยต่างจากข้อความเล็กน้อย (เช่น ยอดเงิน, จำนวนคน) ให้สรุปความจริงจากแหล่งข่าว และระบุส่วนที่ต่างไว้ใน distortions
 
 เกณฑ์คะแนน: 5=จริง 100%, 4=จริงส่วนใหญ่, 3=ก้ำกึ่ง, 2=บิดเบือน, 1=ปลอม/ไร้หลักฐาน
 
 ตอบกลับเป็น JSON รูปแบบนี้เท่านั้น:
 {{
-    "thought": "ประเมินหลักฐาน โดยกวาดอ้างอิงทุกอันที่พูดถึงเหตุการณ์เดียวกันมารวมไว้",
+    "thought": "พิจารณาหลักฐานอย่างรอบด้าน",
     "verdict_summary": "ฟันธงสั้นๆ 1 ประโยค",
     "facts": ["แก่นความจริงที่พบ"],
     "distortions": ["ข้อบิดเบือน (ถ้ามี)"],
     "ai_insights": "สรุปเหตุผลที่ให้คะแนน",
-    "relevant_ref_ids": [ระบุรหัสอ้างอิง 'ทั้งหมด' ที่รายงานเหตุการณ์นี้ได้อย่างถูกต้อง ห้ามใส่ขยะ!],
+    "relevant_ref_ids": [ระบุรหัสอ้างอิงที่สอดคล้องกับเหตุการณ์ทั้งหมด],
     "score": ตัวเลข 1-5
 }}"""
     
-    final_result = call_openrouter(prompt, "You are a Fact-Checker. Include ALL relevant reference IDs that discuss the exact core event. Output strictly in JSON format in THAI.")
+    final_result = call_openrouter(prompt, "You are a Fact-Checker. Provide a comprehensive analysis based on the filtered references. Output strictly in JSON format in THAI.")
     if not final_result:
         return validate_ai_response({"ai_insights": "❌ ข้อผิดพลาด: AI ไม่สามารถประมวลผลได้"})
         
