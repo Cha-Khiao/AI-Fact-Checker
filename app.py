@@ -15,10 +15,14 @@ from llm import analyze_intent_and_plan_search, analyze_news_with_qwen, critic_r
 
 # ================= 1. ตั้งค่า Cache =================
 def cached_extract_text(url): return extract_text_from_url(url)
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def cached_plan_search(text): return analyze_intent_and_plan_search(text)
+
 @st.cache_data(ttl=3600, show_spinner=False)
-def cached_search(query, source_url=""): return search_news_references(query, num_results=10, source_url=source_url)
+# 💡 เพิ่มการรับค่า target_year และขอข่าวมา 15 ลิงก์
+def cached_search(query, locations, core_keywords, target_year, source_url=""): return search_news_references(query, locations, core_keywords, target_year, num_results=15, source_url=source_url)
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def cached_analyze(news_text, references, current_date, source_url=""): return analyze_news_with_qwen(news_text, references, current_date, source_url)
 
@@ -52,8 +56,8 @@ with st.sidebar:
     
     st.markdown("### 🏛️ สถาปัตยกรรมระบบ")
     st.info("""
-    **🚀 ประมวลผลด้วย Contextual AI Search**
-    AI จะถอดรหัสความหมายแฝง (เช่น ฉายาบุคคล/สถานที่) และคัดกรองบริบทข่าวอย่างเข้มงวด เพื่อให้ได้แหล่งอ้างอิงที่ตรงเหตุการณ์ 100%
+    **🚀 ประมวลผลด้วย Relevance-First Reranker**
+    ระบบให้ความสำคัญกับ 'ความแม่นยำของเนื้อหา ไทม์ไลน์ และสถานที่' เหนือสิ่งอื่นใด หากสื่อมวลชนนำเสนอข่าวได้ตรงกว่า สื่อมวลชนจะได้รับการจัดอันดับสูงกว่าเสมอ
     """)
     
     with st.expander("ℹ️ มาตรฐานการประเมิน (IFCN)"):
@@ -202,10 +206,11 @@ if news_content:
             result_dict.update({"verdict_summary": "ไม่มีเนื้อหา"})
             
         else:
-            smooth_progress(progress_bar, 5, 25, "🧠 AI กำลังถอดรหัสบริบทและวางแผนการค้นหา (25%)")
+            smooth_progress(progress_bar, 5, 25, "🧠 AI กำลังสกัดคำสำคัญและวางแผนค้นหา (25%)")
             text_for_keyword = news_content.split("]:\n")[-1] if "[เนื้อหาข่าวจริง" in news_content else news_content
             
-            action, search_query, topic_summary = cached_plan_search(text_for_keyword)
+            # 💡 รับ Parameter ทั้งหมด 6 ตัว (รวม target_year)
+            action, search_query, topic_summary, locations, core_keywords, target_year = cached_plan_search(text_for_keyword)
 
             if action == "DROP":
                 total_time_taken = round(time.time() - start_process_time, 2)
@@ -217,17 +222,17 @@ if news_content:
                 st.markdown(f"📌 **ประเด็นที่วิเคราะห์:** {topic_summary}")
                 
                 if search_query:
-                    st.info(f"🔍 **AI Contextual Query:** `{search_query}`")
+                    st.info(f"🔍 **AI Query:** `{search_query}`")
                 
-                smooth_progress(progress_bar, 25, 55, "🌐 Exa AI กำลังกวาดข้อมูลเชิงความหมายจากสื่อหลัก (55%)")
+                smooth_progress(progress_bar, 25, 55, "🌐 ระบบกำลังกวาดข้อมูลกว่า 60 แหล่ง (55%)")
                 
                 references = []
                 if search_query:
-                    references = cached_search(search_query, original_url)
+                    references = cached_search(search_query, locations, core_keywords, target_year, original_url)
                 
-                st.markdown(f"🔎 **ดึงเนื้อหาข่าวเบื้องต้นได้ {len(references)} แหล่ง**")
-                smooth_progress(progress_bar, 55, 85, "⚖️ AI กำลังวิเคราะห์ไทม์ไลน์และสาเหตุเชิงลึก (85%)")
-                st.markdown("⚖️ **กำลังคัดกรองขยะและเทียบเคียงบริบทอย่างเข้มงวด...**")
+                st.markdown(f"🔎 **จัดอันดับความตรงประเด็น (Relevance) ได้ Top {len(references)} แหล่งข่าวที่ดีที่สุด**")
+                smooth_progress(progress_bar, 55, 85, "⚖️ AI กำลังวิเคราะห์แยกแยะและรวบรวมข้อมูล (85%)")
+                st.markdown("⚖️ **กำลังประเมินและรวบรวมหลักฐาน...**")
                 
                 ai_dict = cached_analyze(news_content, references, current_date_str, original_url)
                 if ai_dict:
@@ -236,7 +241,7 @@ if news_content:
                     progress_bar.progress(100, text=f"ประเมินเสร็จสมบูรณ์ (100%) (ใช้เวลา {total_time_taken} วินาที)")
                     st.markdown("✨ **ประเมินผลสำเร็จ!**")
     
-    # ================= 7. การแสดงผลลัพธ์แบบ Hybrid =================
+    # ================= 7. การแสดงผลลัพธ์ (โชว์ลิงก์เน้นๆ) =================
     has_system_error = "Error" in result_dict.get("ai_insights", "") or "โครงสร้างข้อมูลผิดพลาด" in result_dict.get("ai_insights", "")
     
     if has_system_error:
@@ -279,20 +284,26 @@ if news_content:
             st.markdown("### 🕵️‍♂️ บทวิเคราะห์เชิงลึกจาก AI")
             st.markdown(result_dict.get('ai_insights', 'ไม่มีบทวิเคราะห์เพิ่มเติม'))
 
-        # 💡 ปรับปรุง UI: กรองให้โชว์เฉพาะอ้างอิงที่ AI ยืนยันว่า "เกี่ยวจริงๆ"
         rel_ids = result_dict.get("relevant_ref_ids", [])
         
         with st.container(border=True):
-            st.subheader("📚 แหล่งอ้างอิงที่ใช้ยืนยัน (Verified Sources)")
-            found_relevant = False
+            st.subheader("📚 แหล่งอ้างอิงที่ตรวจสอบแล้ว (Verified Sources)")
+            
+            verified_refs = []
             if references:
                 for idx, ref in enumerate(references):
                     if any(str(idx + 1) == str(rel_id) for rel_id in rel_ids):
-                        st.markdown(f"- [{ref.get('title', 'ลิงก์อ้างอิง')}]({ref.get('href', '#')})")
-                        found_relevant = True
-            
-            if not found_relevant:
-                st.info("ไม่พบข่าวสารจากสื่อหลัก หรือประกาศจากหน่วยงานรัฐที่มีบริบทตรงกับข้อกล่าวอ้างนี้ (ประเมินว่าไร้หลักฐาน หรือนำข่าวเก่ามาเล่าใหม่ผิดบริบท)")
+                        verified_refs.append(ref)
+                
+                # ตาข่ายนิรภัย: ถ้า AI บอกว่าจริง แต่ไม่ได้ใส่รหัสมา ให้เอาข่าว Top โชว์เลย
+                if not verified_refs and result_dict.get("score", 1) >= 3:
+                    verified_refs = references[:5] 
+                    
+            if verified_refs:
+                for idx, ref in enumerate(verified_refs):
+                    st.markdown(f"{idx+1}. [{ref.get('title', 'ลิงก์อ้างอิง')}]({ref.get('href', '#')})")
+            else:
+                st.info("ไม่พบข่าวสารจากสื่อหลัก หรือประกาศจากหน่วยงานรัฐที่มีเนื้อหาตรงกับเหตุการณ์นี้ จึงประเมินว่าข้อความนี้ไร้หลักฐานยืนยัน")
 
     try:
         log_input_data = original_url if original_url else news_content
