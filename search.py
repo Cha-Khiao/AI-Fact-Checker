@@ -7,7 +7,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# 💡 ฟังก์ชันเชื่อมต่อกับ Exa AI API
 def fetch_exa_api(payload, api_key, timeout=25):
     url = "https://api.exa.ai/search"
     headers = {
@@ -24,7 +23,8 @@ def fetch_exa_api(payload, api_key, timeout=25):
         print(f"❌ Exa API Error: {e}")
         return []
 
-def search_news_references(query: str, num_results: int = 10, source_url: str = "") -> list:
+# 💡 รับ parameter must_have_keywords มาจาก llm
+def search_news_references(query: str, num_results: int = 10, must_have_keywords: list = None, source_url: str = "") -> list:
     if not query.strip() or query == "SKIP_SEARCH": 
         return []
     
@@ -42,10 +42,13 @@ def search_news_references(query: str, num_results: int = 10, source_url: str = 
     clean_query = query.replace('"', '').replace("'", "")
     clean_source_url = source_url.split('?')[0].rstrip('/').lower() if source_url else ""
 
-    # 🚫 โดเมนและโฟลเดอร์ที่ไม่ต้องการ
-    blacklisted_domains = ['tiktok.com', 'facebook.com', 'instagram.com', 'x.com', 'twitter.com', 'pantip.com', 'youtube.com', 'blockdit.com']
+    # 🚫 บล็อกโดเมนวิดีโอและโซเชียลเด็ดขาด (Video Ban)
+    blacklisted_domains = [
+        'youtube.com', 'youtu.be', 'tiktok.com', 'facebook.com', 'instagram.com', 'x.com', 'twitter.com', 
+        'vimeo.com', 'dailymotion.com', 'line.me', 'blockdit.com', 'pantip.com',
+        'wikipedia.org', 'wiktionary.org', 'longdo.com', 'thai-language.com'
+    ]
 
-    # ✅ Whitelist สำนักข่าวคุณภาพ (Exa AI อนุญาตให้ยัดลงไปใน includeDomains ได้เลย)
     trusted_media = [
         'thaipbs.or.th', 'pptvhd36.com', 'ch7.com', 'news.ch7.com', 'ch3plus.com', '3plusnews.com', 
         'one31.net', 'amarintv.com', 'nationtv.tv', 'tnnthailand.com', 'springnews.co.th', 
@@ -58,30 +61,25 @@ def search_news_references(query: str, num_results: int = 10, source_url: str = 
         'bbc.com', 'reuters.com', 'apnews.com', 'sanook.com', 'kapook.com', 'today.line.me'
     ]
 
-    # 🚀 กระสุน 1: เจาะเว็บรัฐบาลและศูนย์ต้านข่าวปลอม (Exa รองรับ Suffix match)
+    # กระสุน 1: เจาะเว็บรัฐบาล
     payload_gov = {
-        "query": clean_query,
-        "useAutoprompt": True, # ให้ AI ของ Exa แปลงเป็นคำค้นหาที่ลึกซึ้ง
-        "numResults": 8,
-        "includeDomains": ["go.th", "antifakenewscenter.com", "sure.factcheckthailand.org", "cofact.org"],
-        "contents": {
-            "text": { "maxCharacters": 1500 } # 💡 ให้ดึงเนื้อหาคลีนๆ กลับมาเลย ไม่ต้องใช้ Jina Reader!
-        }
-    }
-
-    # 🚀 กระสุน 2: เจาะเว็บสื่อมวลชนที่เชื่อถือได้
-    payload_media = {
         "query": clean_query,
         "useAutoprompt": True,
         "numResults": 10,
+        "includeDomains": ["go.th", "antifakenewscenter.com", "sure.factcheckthailand.org", "cofact.org"],
+        "contents": { "text": { "maxCharacters": 1500 } }
+    }
+
+    # กระสุน 2: เจาะเว็บสื่อมวลชนที่เชื่อถือได้
+    payload_media = {
+        "query": clean_query,
+        "useAutoprompt": True,
+        "numResults": 15,
         "includeDomains": trusted_media,
-        "contents": {
-            "text": { "maxCharacters": 1500 }
-        }
+        "contents": { "text": { "maxCharacters": 1500 } }
     }
 
     raw_results = []
-    # ยิง Exa API คู่ขนาน
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         future_gov = executor.submit(fetch_exa_api, payload_gov, exa_api_key)
         future_media = executor.submit(fetch_exa_api, payload_media, exa_api_key)
@@ -95,7 +93,6 @@ def search_news_references(query: str, num_results: int = 10, source_url: str = 
     for item in raw_results:
         title = item.get("title", "").strip() if item.get("title") else "ข่าวที่เกี่ยวข้อง"
         link = item.get("url", "")
-        # 💡 Exa ส่งเนื้อหาที่คลีนมาใน text ไม่ใช่แค่ snippet สั้นๆ
         content = item.get("text", "")[:1500] 
         pub_date = item.get("publishedDate", "ไม่ระบุ")
         
@@ -104,7 +101,10 @@ def search_news_references(query: str, num_results: int = 10, source_url: str = 
         link_lower = link.lower()
         link_clean = link_lower.split('?')[0].rstrip('/')
         
-        # 🚫 บล็อก PDF แบบเด็ดขาด
+        # 🚫 กฎเหล็กบล็อกลิงก์วิดีโอ (Video Path Ban)
+        if re.search(r'/(video|watch|shorts|reel|reels|v)/', link_lower) or 'fb.watch' in link_lower:
+            continue
+            
         if '[pdf]' in title.lower() or 'pdf' in title.lower():
             continue
         if re.search(r'\.(pdf|doc|docx|xls|xlsx|ppt|pptx)($|\?)', link_lower):
@@ -120,8 +120,19 @@ def search_news_references(query: str, num_results: int = 10, source_url: str = 
             
         if link in urls_seen or any(b in domain for b in blacklisted_domains):
             continue
-        
-        # 🏅 การจัดลำดับความน่าเชื่อถือ
+            
+        # 💡 ตะแกรงร่อนขยะ (Must-have Keywords Filter)
+        text_content = (title + " " + content).lower()
+        if must_have_keywords:
+            is_valid = True
+            for w in must_have_keywords:
+                # ถ้าหาคำบังคับไม่เจอ ถือว่า Exa มั่วมาให้ -> เตะทิ้ง!
+                if w.lower() not in text_content:
+                    is_valid = False
+                    break
+            if not is_valid:
+                continue 
+
         tier = 2
         if domain.endswith('.go.th') or domain.endswith('.gov') or domain.endswith('.ac.th') or domain.endswith('.or.th'):
             tier = 0
@@ -135,7 +146,7 @@ def search_news_references(query: str, num_results: int = 10, source_url: str = 
             'title': title,
             'href': link,
             'pub_date': pub_date,
-            'snippet': content, # เนื้อหาอัดแน่นเต็มสูบ ส่งให้ Qwen อ่านสบายๆ
+            'snippet': content,
             'tier': tier 
         })
         
