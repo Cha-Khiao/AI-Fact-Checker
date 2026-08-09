@@ -93,11 +93,12 @@ def call_openrouter(prompt: str, system_msg: str) -> dict:
         return {}
 
 # =========================================================
-# ⚡ STEP 1: Search Planner (เหมือนมนุษย์ 100%)
+# ⚡ STEP 1: Search Planner (ระบบถอดรหัสความหมาย & ระบุต้นเหตุ)
 # =========================================================
 def analyze_intent_and_plan_search(news_text: str) -> tuple:
     text_for_analysis = news_text
-    if "]:\n" in news_text: text_for_analysis = news_text.split("]:\n")[-1] 
+    if "]:\n" in news_text: 
+        text_for_analysis = news_text.split("]:\n")[-1] 
         
     text_chunk = sanitize_for_api(text_for_analysis[:1500])
     current_time_context = get_current_thai_time()
@@ -105,30 +106,32 @@ def analyze_intent_and_plan_search(news_text: str) -> tuple:
     prompt = f"""ข้อความที่ต้องการตรวจสอบ: 
 "{text_chunk}"
 
-หน้าที่: สกัด "ประโยคค้นหาภาษาธรรมชาติ (Natural Language Query)" 
-กฎเหล็ก:
-1. `search_query`: ให้แต่งประโยคค้นหาเป็นภาษาพูดที่อธิบายเหตุการณ์ชัดเจน (เช่น "ข่าวพลพีร์ลงพื้นที่จัดระเบียบสายไฟที่สุรินทร์")
-2. ห้ามแยกคีย์เวิร์ดด้วยเว้นวรรค
-3. หากไม่ใช่ข้อกล่าวอ้าง ให้ action = "DROP"
+เวลาปัจจุบัน: {current_time_context}
+
+หน้าที่: สกัด "ประโยคค้นหาภาษาธรรมชาติ (Natural Semantic Query)"
+กฎระดับผู้เชี่ยวชาญ (Expert Level):
+1. ⚠️ การถอดรหัสคำพ้อง (Alias Resolution): หากในข้อความมี 'ฉายา' ของบุคคลหรือจังหวัด (เช่น 'เมืองช้าง', 'มท.2') ให้คุณระบุชื่อจริงหรือชื่อทางการลงในประโยคค้นหาแทน (เช่น 'จังหวัดสุรินทร์', 'รัฐมนตรี') เพื่อให้ Search Engine ทำงานได้แม่นยำ
+2. ⚠️ ระบุต้นเหตุให้ชัดเจน: เช่น หากเป็นข่าวเสียชีวิตจากความร้อน ต้องระบุว่า 'เสียชีวิตจากสภาพอากาศคลื่นความร้อน' ไม่ใช่แค่ 'ความร้อน' (ป้องกันข่าวไฟป่าหลุดเข้ามา)
+3. ⚠️ หากเป็นข่าวเก่าที่มีการระบุปี ให้เขียนปี พ.ศ. ลงไปในประโยคด้วย
 
 ตอบกลับเป็น JSON รูปแบบนี้เท่านั้น:
 {{
     "action": "SEARCH หรือ DROP",
-    "search_query": "ประโยคภาษาธรรมชาติ",
+    "search_query": "ประโยคค้นหาที่ระบุชื่อทางการและระบุต้นเหตุอย่างชัดเจน",
     "topic_summary": "สรุปประเด็นหลัก 1 ประโยค"
 }}"""
-    res_data = call_openrouter(prompt, "Generate a Natural Language Query for semantic search. Output strictly in JSON format in THAI.")
+    res_data = call_openrouter(prompt, "You must resolve nicknames/aliases (e.g. เมืองช้าง -> สุรินทร์) and be highly specific about the CAUSE in the query. Output strictly in JSON format in THAI.")
     
     action = res_data.get("action", "SEARCH").upper()
     raw_query = res_data.get("search_query", text_chunk[:80])
     clean_query = re.sub(r'(ข่าวล่าสุด|รัฐบาลไทย|\||\.\.\.)', '', raw_query).strip()
     topic_summary = res_data.get("topic_summary", "ตรวจสอบข้อเท็จจริง")
     
-    if action == "DROP": return "DROP", "", res_data.get("reason", "ไม่ใช่ข่าวสาร"), []
-    return "SEARCH", clean_query, topic_summary, []
+    if action == "DROP": return "DROP", "", res_data.get("reason", "ไม่ใช่ข่าวสาร")
+    return "SEARCH", clean_query, topic_summary
 
 # =========================================================
-# ⚖️ STEP 2: The Analyzer (ตาข่ายนิรภัยดักจับ "เมนูหน้าเว็บ")
+# ⚖️ STEP 2: The Analyzer (กฎเหล็กจับคู่บริบทและไทม์ไลน์ 100%)
 # =========================================================
 def analyze_news_with_qwen(news_text: str, references: list, current_date: str, source_url: str = "") -> dict:
     clean_claim = sanitize_for_api(news_text[:2000])
@@ -146,28 +149,28 @@ def analyze_news_with_qwen(news_text: str, references: list, current_date: str, 
 ข้อความที่ต้องการตรวจสอบ: "{clean_claim}"
 แหล่งที่มาของข้อความนี้: {origin_info}
 
-หลักฐานที่มีรายละเอียดเชิงลึก:
+หลักฐานที่มีรายละเอียดเชิงลึก (อาจมีข่าวที่ไม่เกี่ยวข้องปะปนมา):
 {ref_text}
 
-ขั้นตอนการวิเคราะห์ (ตาข่ายนิรภัย):
-1. ⚠️ ตรวจจับหน้าเว็บรวมข่าว: หากเนื้อหาในอ้างอิงใดอ่านดูแล้วเหมือนเป็น "เมนูนำทาง (Menu)", "รายการรวมหัวข้อข่าวหลายๆ อัน", หรือไม่มีรายละเอียดเนื้อหาข่าวที่อ่านรู้เรื่อง ให้ถือว่าเป็น "ข้อมูลขยะ (UNRELATED)" ห้ามนำมาอ้างอิงเด็ดขาด!
-2. หากลิงก์ต้นทางเป็นเว็บไซต์รัฐบาล (.go.th) ให้ยึดเจตนาการประกาศของเว็บนั้นเป็นความจริงสูงสุด
-3. พิจารณาที่ "แก่นเหตุการณ์ (Core Event)" หากแหล่งข่าวเจาะจงรายงานตรงกัน ให้ถือเป็นความจริง 
+ขั้นตอนการวิเคราะห์ (Strict Contextual Checking):
+1. ⚠️ ตรวจสอบสาเหตุและบริบท (Context Match): ข่าวอ้างอิงต้องมี "ต้นเหตุและผลลัพธ์" ตรงกับข้อความเป๊ะๆ (เช่น อากาศร้อนธรรมชาติต่างจากความร้อนไฟป่า) หากบริบทต่างกันแม้แต่นิดเดียว ให้ตัดทิ้งทันที!
+2. ⚠️ ตรวจสอบไทม์ไลน์ (Timeline Match): ต้องเป็นเหตุการณ์ในห้วงเวลาเดียวกัน หากพบว่าเป็น "ข่าวเก่า" ที่นำมาผูกโยงผิดบริบท หรือเป็นคนละเหตุการณ์ ให้ตัดทิ้งทันที!
+3. หากลิงก์ต้นทางเป็นเว็บไซต์รัฐบาล (.go.th) ให้ยึดเจตนาการประกาศของเว็บนั้นเป็นความจริงสูงสุด
 
 เกณฑ์คะแนน: 5=จริง 100%, 4=จริงส่วนใหญ่, 3=ก้ำกึ่ง, 2=บิดเบือน, 1=ปลอม/ไร้หลักฐาน
 
 ตอบกลับเป็น JSON รูปแบบนี้เท่านั้น:
 {{
-    "thought": "ตรวจสอบแหล่งข่าว หากอ่านแล้วเหมือนแถบเมนูหรือรายการข่าวรวมให้เตะทิ้ง",
+    "thought": "ประเมินความสอดคล้อง หากสาเหตุ (Cause) หรือช่วงเวลา (Timeline) ไม่ตรงเป๊ะ ให้คัดทิ้งทั้งหมด",
     "verdict_summary": "ฟันธงสั้นๆ 1 ประโยค",
     "facts": ["แก่นความจริงที่พบ"],
     "distortions": ["ข้อบิดเบือน (ถ้ามี)"],
     "ai_insights": "สรุปเหตุผลที่ให้คะแนน",
-    "relevant_ref_ids": [เฉพาะรหัสอ้างอิงที่ยืนยันเหตุการณ์ตรงกัน (ห้ามรวมหน้าเมนู/หน้ารวมข่าว)],
+    "relevant_ref_ids": [⚠️ ใส่เฉพาะเลขรหัสอ้างอิงที่ 'ตรงเป๊ะทั้งบริบทและเวลา' เท่านั้น หากไม่ตรงห้ามใส่เด็ดขาด!],
     "score": ตัวเลข 1-5
 }}"""
     
-    final_result = call_openrouter(prompt, "You are a logical Fact-Checker. Strictly REJECT navigational menus and lists of news. Output strictly in JSON format in THAI.")
+    final_result = call_openrouter(prompt, "You are an ultra-strict Fact-Checker. Reject ANY reference that mismatches the CAUSE or TIMELINE of the claim. Output strictly in JSON format in THAI.")
     if not final_result:
         return validate_ai_response({"ai_insights": "❌ ข้อผิดพลาด: AI ไม่สามารถประมวลผลได้"})
         
