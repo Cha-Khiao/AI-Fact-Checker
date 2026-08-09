@@ -93,7 +93,7 @@ def call_openrouter(prompt: str, system_msg: str) -> dict:
         return {}
 
 # =========================================================
-# ⚡ STEP 1: Search Planner (ระบบค้นหาแบบ Advanced Google Operators)
+# ⚡ STEP 1: Search Planner (แต่งประโยคให้ Neural Search ทำงาน)
 # =========================================================
 def analyze_intent_and_plan_search(news_text: str) -> tuple:
     text_for_analysis = news_text
@@ -103,40 +103,38 @@ def analyze_intent_and_plan_search(news_text: str) -> tuple:
     text_chunk = sanitize_for_api(text_for_analysis[:1500])
     current_time_context = get_current_thai_time()
     
-    prompt = f"""ข้อความที่ดึงมาจากเว็บไซต์: 
+    prompt = f"""ข้อความที่ต้องการตรวจสอบ: 
 "{text_chunk}"
 
-หน้าที่: สกัด "คำค้นหาขั้นสูง (Advanced Google Query)" เพื่อบังคับให้ Google หาเฉพาะข่าวที่เกี่ยวข้องกันเป๊ะๆ
-กฎเหล็กขั้นเด็ดขาด:
-1. `search_query`: ⚠️ บังคับให้ใช้เครื่องหมายฟันหนู (Double Quotes) `""` คร่อมคำนาม/สถานที่/เหตุการณ์ที่สำคัญ เพื่อสั่งให้ Google ทำการ Exact Match (เช่น `"พลพีร์" "สายไฟลงดิน" "สุรินทร์"` หรือ `"มท.2" "จัดระเบียบสายไฟ" "สุรินทร์"`) ห้ามแต่งเป็นประโยคยาวๆ ที่ไม่มีฟันหนูเด็ดขาด!
-2. `must_have_keywords`: สกัดชื่อสถานที่หรือบุคคล 1-2 คำ (เช่น ["สุรินทร์", "สายไฟ"]) เพื่อใช้เป็นตาข่ายชั้นที่ 2
-3. หากข้อความเป็นเรื่องทักทาย ให้ action = "DROP"
+หน้าที่: สกัด "ประโยคค้นหาภาษาธรรมชาติ (Natural Language Query)" เพื่อส่งให้ AI Search Engine
+กฎเหล็ก:
+1. `search_query`: ให้แต่งประโยคค้นหาเป็นภาษาพูดหรือพาดหัวข่าวแบบชัดเจน (เช่น "ข่าวเกี่ยวกับรัฐมนตรีพลพีร์ สุวรรณฉวี ลงพื้นที่จัดระเบียบสายไฟลงดินที่จังหวัดสุรินทร์")
+2. ห้ามใช้เครื่องหมาย "ฟันหนู" หรือพิมพ์เป็นคีย์เวิร์ดคั่นด้วยสเปซบาร์เด็ดขาด! ให้เขียนเป็นประโยคที่มนุษย์ใช้พูดกันเลย
+3. ห้ามก๊อปปี้คำว่า "ข่าว" "ล่าสุด" หรือ Header ขยะจากต้นฉบับมาแปะ
 
 ตอบกลับเป็น JSON รูปแบบนี้เท่านั้น:
 {{
     "action": "SEARCH หรือ DROP",
-    "search_query": "คีย์เวิร์ดที่ถูกคร่อมด้วยฟันหนู (Advanced Search)",
-    "must_have_keywords": ["คำบังคับที่1", "คำบังคับที่2"],
+    "search_query": "ประโยคภาษาธรรมชาติที่สรุปใจความสำคัญ (Natural Language)",
     "topic_summary": "สรุปประเด็นหลัก 1 ประโยค"
 }}"""
-    res_data = call_openrouter(prompt, "You MUST use Double Quotes (\"\") around core entities to force Exact Match on Google. Output strictly in JSON format in THAI.")
+    res_data = call_openrouter(prompt, "You must generate a descriptive Natural Language Query for an AI semantic search engine. NO double quotes. Output strictly in JSON format in THAI.")
     
     action = res_data.get("action", "SEARCH").upper()
-    
     raw_query = res_data.get("search_query", text_chunk[:80])
-    # คลีนคำขยะแต่รักษาฟันหนูไว้
-    clean_query = re.sub(r'(ข่าว|ล่าสุด|รัฐบาลไทย|\||\.\.\.)', '', raw_query).strip()
-    must_have_keywords = res_data.get("must_have_keywords", [])
+    clean_query = re.sub(r'(ข่าวล่าสุด|รัฐบาลไทย|\||\.\.\.)', '', raw_query).strip()
     topic_summary = res_data.get("topic_summary", "ตรวจสอบข้อเท็จจริง")
     
-    if action == "DROP": return "DROP", "", res_data.get("reason", "ไม่ใช่ข่าวสาร"), []
-    return "SEARCH", clean_query, topic_summary, must_have_keywords
+    if action == "DROP": return "DROP", "", res_data.get("reason", "ไม่ใช่ข่าวสาร")
+    return "SEARCH", clean_query, topic_summary
 
 # =========================================================
-# ⚖️ STEP 2: The Analyzer
+# ⚖️ STEP 2: The Analyzer (ใช้ประโยชน์จากเนื้อหาเต็มของ Exa)
 # =========================================================
 def analyze_news_with_qwen(news_text: str, references: list, current_date: str, source_url: str = "") -> dict:
     clean_claim = sanitize_for_api(news_text[:2000])
+    
+    # 💡 เนื้อหาจาก Exa มีความยาว 1,500 ตัวอักษร ให้ AI อ่านแบบจุใจ
     ref_text = "\n\n".join([f"[อ้างอิง {i+1}]: {r['title']}\nเนื้อหา: {r.get('snippet', '')}" for i, r in enumerate(references)]) if references else "ไม่มีอ้างอิง"
     
     is_official_source = bool(source_url and (".go.th" in source_url.lower() or ".gov" in source_url.lower()))
@@ -151,27 +149,28 @@ def analyze_news_with_qwen(news_text: str, references: list, current_date: str, 
 ข้อความที่ต้องการตรวจสอบ: "{clean_claim}"
 แหล่งที่มาของข้อความนี้: {origin_info}
 
-หลักฐานที่ค้นพบจาก Search Engine:
+หลักฐานที่มีรายละเอียดเชิงลึก (ดึงจาก Neural Search):
 {ref_text}
 
 ขั้นตอนการวิเคราะห์:
-1. หากลิงก์ต้นทางเป็นเว็บไซต์รัฐบาล (.go.th) ให้ยึดเจตนาการประกาศของเว็บนั้นเป็นความจริงสูงสุด
-2. พิจารณาที่ "แก่นเหตุการณ์ (Core Event)" หากแหล่งข่าวเจาะจงรายงานเหตุการณ์ตรงกัน ให้ถือเป็นความจริง 
+1. หากอ้างอิงใดอ่านเนื้อหาแล้วไม่เกี่ยวกับเหตุการณ์นี้ ให้ปัดตกทันที
+2. หากลิงก์ต้นทางเป็นเว็บไซต์รัฐบาล (.go.th) ให้ยึดเจตนาการประกาศของเว็บนั้นเป็นความจริงสูงสุด
+3. พิจารณาที่ "แก่นเหตุการณ์ (Core Event)" หากแหล่งข่าวเจาะจงรายงานตรงกัน ให้ถือเป็นความจริง 
 
 เกณฑ์คะแนน: 5=จริง 100%, 4=จริงส่วนใหญ่, 3=ก้ำกึ่ง, 2=บิดเบือน, 1=ปลอม/ไร้หลักฐาน
 
 ตอบกลับเป็น JSON รูปแบบนี้เท่านั้น:
 {{
-    "thought": "ตรวจสอบแหล่งข่าวว่ารายงานเหตุการณ์ตรงกับข้อความหรือไม่",
+    "thought": "ประเมินความสอดคล้องของข้อความกับหลักฐานที่ค้นพบ",
     "verdict_summary": "ฟันธงสั้นๆ 1 ประโยค",
     "facts": ["แก่นความจริงที่พบ"],
     "distortions": ["ข้อบิดเบือน (ถ้ามี)"],
     "ai_insights": "สรุปเหตุผลที่ให้คะแนน",
-    "relevant_ref_ids": [เฉพาะรหัสอ้างอิงที่เป็น 'ข่าวเจาะจง' และเหตุการณ์ตรงกันเท่านั้น],
+    "relevant_ref_ids": [เฉพาะรหัสอ้างอิงที่ยืนยันเหตุการณ์ตรงกัน],
     "score": ตัวเลข 1-5
 }}"""
     
-    final_result = call_openrouter(prompt, "You are a logical Fact-Checker. Match CORE EVENTS and reject homepage/general links. Output strictly in JSON format in THAI.")
+    final_result = call_openrouter(prompt, "You are a logical Fact-Checker. Read the detailed content provided by Exa AI. Output strictly in JSON format in THAI.")
     if not final_result:
         return validate_ai_response({"ai_insights": "❌ ข้อผิดพลาด: AI ไม่สามารถประมวลผลได้"})
         
