@@ -14,6 +14,3 @@ env/
 # ไฟล์ระบบของ OS
 .DS_Store
 Thumbs.db
-
-# ไฟล์ระบบของ Log
-thesis_system_logs.csv

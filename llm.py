@@ -93,7 +93,7 @@ def call_openrouter(prompt: str, system_msg: str) -> dict:
         return {}
 
 # =========================================================
-# ⚡ STEP 1: Search Planner (ระบบคู่หู: Natural Query + Strict Keyword)
+# ⚡ STEP 1: Search Planner (แต่งประโยคค้นหาล้วนๆ ไม่ต้องสกัดคำบังคับ)
 # =========================================================
 def analyze_intent_and_plan_search(news_text: str) -> tuple:
     text_for_analysis = news_text
@@ -106,32 +106,30 @@ def analyze_intent_and_plan_search(news_text: str) -> tuple:
     prompt = f"""ข้อความที่ต้องการตรวจสอบ: 
 "{text_chunk}"
 
-หน้าที่: สกัด "ประโยคค้นหา (Query)" และ "คำบังคับ (Must-have)" 
-กฎเหล็ก:
-1. `search_query`: ให้แต่งประโยคค้นหาเป็นภาษาพูดที่อธิบายเหตุการณ์ได้ชัดเจน (เช่น "ข่าวรัฐมนตรีพลพีร์ลงพื้นที่จัดระเบียบสายไฟที่สุรินทร์")
-2. `must_have_keywords`: ⚠️ สกัดคำศัพท์ที่เป็น **"คำนามเฉพาะ (Nouns)"** 1-2 คำ ที่เนื้อหาต้องมีเพื่อใช้กรองข่าวที่กว้างเกินไปทิ้ง (เช่น ["สายไฟ", "สุรินทร์"]) ห้ามใช้คำกริยา
-3. หากไม่ใช่ข้อกล่าวอ้าง ให้ action = "DROP"
+หน้าที่: สกัด "ประโยคค้นหา" สำหรับ Semantic Search API
+กฎ:
+1. `search_query`: ให้แต่งเป็น "ประโยคสรุปเหตุการณ์สั้นๆ" ที่อธิบายว่า ใคร ทำอะไร ที่ไหน (เช่น "พลพีร์ สุวรรณฉวี ลงพื้นที่จัดระเบียบสายไฟลงดินที่สุรินทร์")
+2. หากไม่ใช่ข้อกล่าวอ้างหรือข่าวสาร ให้ action = "DROP"
 
 ตอบกลับเป็น JSON รูปแบบนี้เท่านั้น:
 {{
     "action": "SEARCH หรือ DROP",
-    "search_query": "ประโยคภาษาธรรมชาติ",
-    "must_have_keywords": ["คำนามบังคับที่1", "คำนามบังคับที่2"],
+    "search_query": "ประโยคค้นหาที่ชัดเจน",
     "topic_summary": "สรุปประเด็นหลัก 1 ประโยค"
 }}"""
-    res_data = call_openrouter(prompt, "Generate a Natural Language Query AND 2 strict mandatory nouns to filter out broad/irrelevant semantic results. Output strictly in JSON format in THAI.")
+    res_data = call_openrouter(prompt, "Generate a natural language query for AI search. Output strictly in JSON format in THAI.")
     
     action = res_data.get("action", "SEARCH").upper()
     raw_query = res_data.get("search_query", text_chunk[:80])
     clean_query = re.sub(r'(ข่าวล่าสุด|รัฐบาลไทย|\||\.\.\.)', '', raw_query).strip()
-    must_have_keywords = res_data.get("must_have_keywords", [])
     topic_summary = res_data.get("topic_summary", "ตรวจสอบข้อเท็จจริง")
     
     if action == "DROP": return "DROP", "", res_data.get("reason", "ไม่ใช่ข่าวสาร"), []
-    return "SEARCH", clean_query, topic_summary, must_have_keywords
+    # คืนค่า list ว่างแทน must_have_keywords เดิม เพื่อไม่ให้โค้ดส่วนอื่นพัง
+    return "SEARCH", clean_query, topic_summary, []
 
 # =========================================================
-# ⚖️ STEP 2: The Analyzer
+# ⚖️ STEP 2: The Analyzer (ให้ AI อ่านเนื้อหาเองเต็มๆ)
 # =========================================================
 def analyze_news_with_qwen(news_text: str, references: list, current_date: str, source_url: str = "") -> dict:
     clean_claim = sanitize_for_api(news_text[:2000])
@@ -155,7 +153,7 @@ def analyze_news_with_qwen(news_text: str, references: list, current_date: str, 
 ขั้นตอนการวิเคราะห์:
 1. หากอ้างอิงใดอ่านเนื้อหาแล้วไม่เกี่ยวกับเหตุการณ์นี้ ให้ปัดตกทันที
 2. หากลิงก์ต้นทางเป็นเว็บไซต์รัฐบาล (.go.th) ให้ยึดเจตนาการประกาศของเว็บนั้นเป็นความจริงสูงสุด
-3. พิจารณาที่ "แก่นเหตุการณ์ (Core Event)" หากแหล่งข่าวเจาะจงรายงานตรงกัน ให้ถือเป็นความจริง 
+3. พิจารณาที่ "แก่นเหตุการณ์ (Core Event)" หากแหล่งข่าวเจาะจงรายงานตรงกัน ให้ถือเป็นความจริง (ไม่ต้องสนใจว่าพาดหัวข่าวจะใช้คำต่างกันนิดหน่อย)
 
 เกณฑ์คะแนน: 5=จริง 100%, 4=จริงส่วนใหญ่, 3=ก้ำกึ่ง, 2=บิดเบือน, 1=ปลอม/ไร้หลักฐาน
 
