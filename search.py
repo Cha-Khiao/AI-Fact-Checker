@@ -49,7 +49,8 @@ def is_actual_article(url, title):
     if len(title.strip().split()) <= 2 and len(title) < 20: return False
     return True
 
-def search_news_references(query: str, num_results: int = 10, source_url: str = "") -> list:
+# 💡 รับ target_year มาใช้หักคะแนนข่าวเก่า
+def search_news_references(query: str, locations: list, core_keywords: list, target_year: str, num_results: int = 15, source_url: str = "") -> list:
     if not query.strip() or query == "SKIP_SEARCH": return []
     
     exa_api_key = os.getenv("EXA_API_KEY", "").strip()
@@ -88,7 +89,7 @@ def search_news_references(query: str, num_results: int = 10, source_url: str = 
         "query": clean_query,
         "type": "auto", 
         "useAutoprompt": False,
-        "numResults": 10,
+        "numResults": 20,
         "includeDomains": ["go.th", "antifakenewscenter.com", "sure.factcheckthailand.org", "cofact.org"],
         "contents": { "text": { "maxCharacters": 1500 } }
     }
@@ -97,7 +98,7 @@ def search_news_references(query: str, num_results: int = 10, source_url: str = 
         "query": clean_query,
         "type": "auto",
         "useAutoprompt": False,
-        "numResults": 15,
+        "numResults": 40,
         "includeDomains": trusted_media,
         "contents": { "text": { "maxCharacters": 1500 } }
     }
@@ -122,13 +123,50 @@ def search_news_references(query: str, num_results: int = 10, source_url: str = 
         domain = parsed_url.netloc.replace('www.', '')
         link_clean = link.lower().split('?')[0].rstrip('/')
 
-        # เช็กว่าเป็นเว็บรัฐ หรือศูนย์ต้านข่าวปลอมหรือไม่
-        is_gov_or_factcheck = domain.endswith('.go.th') or domain.endswith('.gov') or domain.endswith('.ac.th') or domain.endswith('.or.th') or 'antifakenewscenter.com' in domain or 'sure.factcheckthailand.org' in domain or 'cofact.org' in domain
-
+        if re.search(r'\.(pdf|doc|docx|xls|xlsx|ppt|pptx)($|\?)', link.lower()): continue
+        if '[pdf]' in title.lower() or 'pdf' in title.lower(): continue
         if clean_source_url and (clean_source_url == link_clean): continue
         if link in urls_seen or any(b in domain for b in blacklisted_domains): continue
+
+        text_content = (title + " " + content).lower()
+        match_score = 0
         
-        # 💡 VIP PASS: ถ้าเป็นเว็บรัฐบาล ให้ดึงข้อมูลมาเลย ไม่ต้องตรวจโครงสร้าง Title/URL เพราะโครงสร้างมันพังบ่อย!
+        # 1. 📍 สถานที่: ต้องมี และถ้าอยู่ใน "พาดหัวข่าว" จะได้คะแนนทะลุหลอด (กันพวกติ่งโฆษณาด้านข้าง)
+        if locations:
+            has_location = any(loc.lower() in text_content for loc in locations)
+            if not has_location:
+                continue 
+            if any(loc.lower() in title.lower() for loc in locations):
+                match_score += 15 # ชื่อจังหวัดอยู่บนพาดหัวข่าว = ตรงประเด็นแน่นอน!
+            else:
+                match_score += 2  # อยู่แค่ในเนื้อหา ได้คะแนนน้อยลง
+
+        # 2. 📝 แก่นเรื่อง
+        if core_keywords:
+            for kw in core_keywords:
+                if kw.lower() in text_content:
+                    match_score += 2
+                if kw.lower() in title.lower():
+                    match_score += 5 # คำแก่นเรื่องอยู่บนพาดหัวข่าว = สุดยอด!
+
+        # 3. ⏰ ไทม์ไลน์: สไนเปอร์ยิงข่าวเก่าทิ้ง!
+        if target_year:
+            target_year_str = str(target_year).strip()
+            if target_year_str in text_content:
+                match_score += 20 # ปีตรงเผง เอาแชมป์ไปเลย!
+            else:
+                # ถ้าปีไม่ตรงเช็กซิว่ามีตัวเลขปีเก่าๆ โผล่มาไหม
+                try:
+                    ty_int = int(target_year_str)
+                    # สร้าง List ปีเก่า (เช่น 2550 ถึง ปีก่อนหน้า)
+                    old_years = [str(y) for y in range(2550, ty_int)] + [str(y - 543) for y in range(2550, ty_int)]
+                    if any(oy in text_content for oy in old_years):
+                        match_score -= 50 # โดนหัก 50 คะแนน ตกไปอยู่บ๊วยสุดทันที!
+                except:
+                    pass
+
+        is_gov_or_factcheck = domain.endswith('.go.th') or domain.endswith('.gov') or domain.endswith('.ac.th') or domain.endswith('.or.th') or 'antifakenewscenter.com' in domain or 'sure.factcheckthailand.org' in domain or 'cofact.org' in domain
+
         if not is_gov_or_factcheck:
             if not is_actual_article(link, title): 
                 continue
@@ -136,6 +174,7 @@ def search_news_references(query: str, num_results: int = 10, source_url: str = 
         tier = 2
         if is_gov_or_factcheck:
             tier = 0
+            # ลบโบนัสมหาศาลของเว็บรัฐออก ให้แข่งกันที่ความตรงประเด็น (match_score) เป็นหลัก
         elif any(wd in domain for wd in trusted_media):
             tier = 1
 
@@ -145,10 +184,17 @@ def search_news_references(query: str, num_results: int = 10, source_url: str = 
             'href': link,
             'pub_date': pub_date,
             'snippet': content,
-            'tier': tier 
+            'tier': tier,
+            'match_score': match_score
         })
         
-    processed_results.sort(key=lambda x: x['tier'])
-    for r in processed_results: r.pop('tier', None)
+    # ⚠️ ปฏิวัติการจัดอันดับ: ความเกี่ยวข้อง (Match Score) ต้องมาก่อน ยศถาบรรดาศักดิ์ (Tier) เอาไว้ทีหลัง!
+    # สื่อหลักที่เขียนข่าวได้ตรงประเด็นที่สุด จะชนะเว็บรัฐบาลที่มีแต่ข่าวเก่า!
+    processed_results.sort(key=lambda x: (-x['match_score'], x['tier']))
+    
+    for r in processed_results: 
+        r.pop('tier', None)
+        r.pop('match_score', None)
         
+    # ส่ง 15 ลิงก์สุดยอดให้ AI อ่าน (เหลือเฟือสำหรับ Token)
     return processed_results[:num_results]
