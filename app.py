@@ -20,8 +20,7 @@ def cached_extract_text(url): return extract_text_from_url(url)
 def cached_plan_search(text): return analyze_intent_and_plan_search(text)
 
 @st.cache_data(ttl=3600, show_spinner=False)
-# 💡 เพิ่มการรับค่า target_year และขอข่าวมา 15 ลิงก์
-def cached_search(query, locations, core_keywords, target_year, source_url=""): return search_news_references(query, locations, core_keywords, target_year, num_results=15, source_url=source_url)
+def cached_search(query, locations, core_keywords, source_url=""): return search_news_references(query, locations, core_keywords, num_results=15, source_url=source_url)
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def cached_analyze(news_text, references, current_date, source_url=""): return analyze_news_with_qwen(news_text, references, current_date, source_url)
@@ -56,8 +55,8 @@ with st.sidebar:
     
     st.markdown("### 🏛️ สถาปัตยกรรมระบบ")
     st.info("""
-    **🚀 ประมวลผลด้วย Relevance-First Reranker**
-    ระบบให้ความสำคัญกับ 'ความแม่นยำของเนื้อหา ไทม์ไลน์ และสถานที่' เหนือสิ่งอื่นใด หากสื่อมวลชนนำเสนอข่าวได้ตรงกว่า สื่อมวลชนจะได้รับการจัดอันดับสูงกว่าเสมอ
+    **🚀 ประมวลผลด้วย Semantic & Temporal AI Alignment**
+    ระบบจะเปรียบเทียบ 'ความเหมือนของเนื้อหา' และ 'ห้วงเวลาของการลงข่าว' จากฐานข้อมูลกว่า 60 สำนักข่าว เพื่อให้ได้ผลลัพธ์ที่สอดคล้องกับความเป็นจริงมากที่สุด
     """)
     
     with st.expander("ℹ️ มาตรฐานการประเมิน (IFCN)"):
@@ -209,8 +208,7 @@ if news_content:
             smooth_progress(progress_bar, 5, 25, "🧠 AI กำลังสกัดคำสำคัญและวางแผนค้นหา (25%)")
             text_for_keyword = news_content.split("]:\n")[-1] if "[เนื้อหาข่าวจริง" in news_content else news_content
             
-            # 💡 รับ Parameter ทั้งหมด 6 ตัว (รวม target_year)
-            action, search_query, topic_summary, locations, core_keywords, target_year = cached_plan_search(text_for_keyword)
+            action, search_query, topic_summary, locations, core_keywords = cached_plan_search(text_for_keyword)
 
             if action == "DROP":
                 total_time_taken = round(time.time() - start_process_time, 2)
@@ -228,11 +226,11 @@ if news_content:
                 
                 references = []
                 if search_query:
-                    references = cached_search(search_query, locations, core_keywords, target_year, original_url)
+                    references = cached_search(search_query, locations, core_keywords, original_url)
                 
-                st.markdown(f"🔎 **จัดอันดับความตรงประเด็น (Relevance) ได้ Top {len(references)} แหล่งข่าวที่ดีที่สุด**")
-                smooth_progress(progress_bar, 55, 85, "⚖️ AI กำลังวิเคราะห์แยกแยะและรวบรวมข้อมูล (85%)")
-                st.markdown("⚖️ **กำลังประเมินและรวบรวมหลักฐาน...**")
+                st.markdown(f"🔎 **ดึงแหล่งอ้างอิงที่น่าจะเกี่ยวข้องมาได้ทั้งหมด {len(references)} แหล่ง**")
+                smooth_progress(progress_bar, 55, 85, "⚖️ AI กำลังวิเคราะห์แยกแยะห้วงเวลา (Timeline) อย่างละเอียด (85%)")
+                st.markdown("⚖️ **กำลังเทียบเคียงหลักฐานและคัดทิ้งข่าวเก่า...**")
                 
                 ai_dict = cached_analyze(news_content, references, current_date_str, original_url)
                 if ai_dict:
@@ -303,7 +301,7 @@ if news_content:
                 for idx, ref in enumerate(verified_refs):
                     st.markdown(f"{idx+1}. [{ref.get('title', 'ลิงก์อ้างอิง')}]({ref.get('href', '#')})")
             else:
-                st.info("ไม่พบข่าวสารจากสื่อหลัก หรือประกาศจากหน่วยงานรัฐที่มีเนื้อหาตรงกับเหตุการณ์นี้ จึงประเมินว่าข้อความนี้ไร้หลักฐานยืนยัน")
+                st.info("ไม่พบข่าวสารจากสื่อหลัก หรือประกาศจากหน่วยงานรัฐที่มีเนื้อหาตรงกับเหตุการณ์นี้ (ข่าวที่ค้นพบมาจากคนละสถานที่หรือคนละไทม์ไลน์) จึงประเมินว่าข้อความนี้ไร้หลักฐานยืนยัน")
 
     try:
         log_input_data = original_url if original_url else news_content
