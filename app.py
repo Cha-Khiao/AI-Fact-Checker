@@ -20,7 +20,7 @@ def cached_extract_text(url): return extract_text_from_url(url)
 def cached_plan_search(text): return analyze_intent_and_plan_search(text)
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def cached_search(query, locations, core_keywords, source_url=""): return search_news_references(query, locations, core_keywords, num_results=15, source_url=source_url)
+def cached_search(query, locations, core_keywords, target_year, source_url=""): return search_news_references(query, locations, core_keywords, target_year, num_results=10, source_url=source_url)
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def cached_analyze(news_text, references, current_date, source_url=""): return analyze_news_with_qwen(news_text, references, current_date, source_url)
@@ -50,23 +50,23 @@ st.markdown("""
 # ================= 3. แถบด้านข้าง (Sidebar) =================
 with st.sidebar:
     st.markdown("<h2 style='text-align: center; color: #1e3a8a;'>🛡️ AI Fact-Checker</h2>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; font-size: 0.9rem; opacity: 0.8;'>ระบบประเมินความน่าเชื่อถือของข่าว</p>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; font-size: 0.9rem; opacity: 0.8;'>ระบบวิเคราะห์และเปรียบเทียบข่าวออนไลน์</p>", unsafe_allow_html=True)
     st.divider()
     
     st.markdown("### 🏛️ สถาปัตยกรรมระบบ")
     st.info("""
-    **🚀 ประมวลผลด้วย Semantic & Temporal AI Alignment**
-    ระบบจะเปรียบเทียบ 'ความเหมือนของเนื้อหา' และ 'ห้วงเวลาของการลงข่าว' จากฐานข้อมูลกว่า 60 สำนักข่าว เพื่อให้ได้ผลลัพธ์ที่สอดคล้องกับความเป็นจริงมากที่สุด
+    **🚀 AI Comparative Analysis**
+    ระบบทำงานตามหลักงานวิจัย โดยสืบค้นและคัดกรองข้อมูลจากสื่อหลักและภาครัฐ (Whitelist) ป้องกันเนื้อหาที่ไม่เกี่ยวข้องอย่างเด็ดขาด จากนั้นใช้ LLM เปรียบเทียบความสอดคล้องอย่างเป็นเหตุเป็นผล
     """)
     
     with st.expander("ℹ️ มาตรฐานการประเมิน (IFCN)"):
         st.markdown("""
         ประยุกต์ใช้ตรรกะ **Truth-O-Meter**:
-        *   **95%:** มีหลักฐานยืนยันชัดเจน
-        *   **75%:** จริงส่วนใหญ่ อาจคลาดเคลื่อนเล็กน้อย
-        *   **50%:** ก้ำกึ่ง ไม่มีหลักฐาน หรือข้อมูลขัดแย้ง
-        *   **25%:** มีเค้าโครงจริง แต่บิดเบือนบริบท
-        *   **10%:** ข่าวปลอม หรือข้อกล่าวอ้างที่ไร้หลักฐาน
+        *   **95%:** สอดคล้องกับสื่อหลักชัดเจน
+        *   **75%:** สอดคล้องส่วนใหญ่ (มีคลาดเคลื่อนเล็กน้อย)
+        *   **50%:** ข้อมูลก้ำกึ่ง ไม่ชัดเจน
+        *   **25%:** มีเค้าโครง แต่บิดเบือนไปจากสื่อหลัก
+        *   **10%:** ขัดแย้ง 100% หรือไร้แหล่งอ้างอิงสนับสนุน
         """)
         
     st.divider()
@@ -80,11 +80,11 @@ def get_score_ui_config(level):
     try: level = int(level)
     except: return "N/A", "#94a3b8", "rgba(148, 163, 184, 0.1)", "rgba(148, 163, 184, 0.4)", "ไม่สามารถประเมินได้"
         
-    if level == 5: return "95%", "#10b981", "rgba(16, 185, 129, 0.1)", "rgba(16, 185, 129, 0.4)", "มีความน่าเชื่อถือสูง"
-    elif level == 4: return "75%", "#10b981", "rgba(16, 185, 129, 0.1)", "rgba(16, 185, 129, 0.4)", "น่าเชื่อถือส่วนใหญ่"
-    elif level == 3: return "50%", "#f59e0b", "rgba(245, 158, 11, 0.1)", "rgba(245, 158, 11, 0.4)", "ข้อมูลก้ำกึ่ง / ขัดแย้ง"
-    elif level == 2: return "25%", "#ef4444", "rgba(239, 68, 68, 0.1)", "rgba(239, 68, 68, 0.4)", "บิดเบือนความจริง"
-    elif level == 1: return "10%", "#ef4444", "rgba(239, 68, 68, 0.1)", "rgba(239, 68, 68, 0.4)", "ข่าวปลอม / ไร้หลักฐาน"
+    if level == 5: return "95%", "#10b981", "rgba(16, 185, 129, 0.1)", "rgba(16, 185, 129, 0.4)", "สอดคล้องกับสื่อหลัก (น่าเชื่อถือสูง)"
+    elif level == 4: return "75%", "#10b981", "rgba(16, 185, 129, 0.1)", "rgba(16, 185, 129, 0.4)", "สอดคล้องส่วนใหญ่"
+    elif level == 3: return "50%", "#f59e0b", "rgba(245, 158, 11, 0.1)", "rgba(245, 158, 11, 0.4)", "ข้อมูลก้ำกึ่ง / ขัดแย้งบางส่วน"
+    elif level == 2: return "25%", "#ef4444", "rgba(239, 68, 68, 0.1)", "rgba(239, 68, 68, 0.4)", "ข้อมูลบิดเบือนไปจากสื่อหลัก"
+    elif level == 1: return "10%", "#ef4444", "rgba(239, 68, 68, 0.1)", "rgba(239, 68, 68, 0.4)", "ข่าวขัดแย้ง / ไร้ข้อมูลอ้างอิง"
     return "N/A", "#94a3b8", "rgba(148, 163, 184, 0.1)", "rgba(148, 163, 184, 0.4)", "ไม่สามารถประเมินได้"
 
 def save_system_log(input_type, input_data, search_query, references, ai_result_dict, process_time):
@@ -110,7 +110,7 @@ def save_system_log(input_type, input_data, search_query, references, ai_result_
 # ================= 5. ส่วนแสดงผล UI =================
 st.markdown("""<div style='text-align: center; margin-bottom: 2rem;'>
     <h1 style='font-size: 2.5rem; margin-bottom: 0px; color: #1e3a8a;'>🛡️ AI Fact-Checker</h1>
-    <p style='font-size: 1.1rem; opacity: 0.8; margin-top: 5px;'>ระบบประเมินความน่าเชื่อถือของข่าวสารด้วยปัญญาประดิษฐ์</p>
+    <p style='font-size: 1.1rem; opacity: 0.8; margin-top: 5px;'>ระบบวิเคราะห์และเปรียบเทียบความน่าเชื่อถือของข่าวออนไลน์</p>
     </div>""", unsafe_allow_html=True)
 
 tab1, tab2 = st.tabs(["🌐 ตรวจสอบจากลิงก์ (URL)", "📄 ตรวจสอบจากข้อความ"])
@@ -170,15 +170,15 @@ if news_content:
     current_date_str = f"{now.day} {months_th[now.month - 1]} {now.year + 543}"
     
     references = []
-    result_dict = {"verdict_summary": "N/A", "facts": [], "distortions": [], "ai_insights": "N/A", "score": "N/A", "relevant_ref_ids": []}
+    result_dict = {"verdict_summary": "N/A", "supported_points": [], "conflicting_points": [], "comparative_analysis": "N/A", "score": "N/A", "relevant_ref_ids": []}
     search_query = "SKIP_SEARCH"
     total_time_taken = 0.0
     
     progress_bar = st.progress(0, text="กำลังเตรียมการวิเคราะห์ (0%)")
-    smooth_progress(progress_bar, 0, 5, "กำลังเริ่มต้นกระบวนการตรวจสอบ (5%)")
+    smooth_progress(progress_bar, 0, 5, "กำลังเริ่มต้นกระบวนการเปรียบเทียบ (5%)")
     
     with st.container(border=True):
-        st.markdown("### ⚙️ กระบวนการประมวลผลของระบบ")
+        st.markdown("### ⚙️ กระบวนการทำงานของระบบ")
             
         if news_content == "VIDEO_DETECTED":
             total_time_taken = round(time.time() - start_process_time, 2)
@@ -208,7 +208,7 @@ if news_content:
             smooth_progress(progress_bar, 5, 25, "🧠 AI กำลังสกัดคำสำคัญและวางแผนค้นหา (25%)")
             text_for_keyword = news_content.split("]:\n")[-1] if "[เนื้อหาข่าวจริง" in news_content else news_content
             
-            action, search_query, topic_summary, locations, core_keywords = cached_plan_search(text_for_keyword)
+            action, search_query, topic_summary, locations, core_keywords, target_year = cached_plan_search(text_for_keyword)
 
             if action == "DROP":
                 total_time_taken = round(time.time() - start_process_time, 2)
@@ -217,75 +217,72 @@ if news_content:
                 search_query = "SKIP_SEARCH"
                 result_dict.update({"verdict_summary": "เนื้อหาทั่วไป/เรื่องส่วนตัว"})
             else:
-                st.markdown(f"📌 **ประเด็นที่วิเคราะห์:** {topic_summary}")
+                st.markdown(f"📌 **ประเด็นที่เปรียบเทียบ:** {topic_summary}")
                 
-                if search_query:
-                    st.info(f"🔍 **AI Query:** `{search_query}`")
-                
-                smooth_progress(progress_bar, 25, 55, "🌐 ระบบกำลังกวาดข้อมูลกว่า 60 แหล่ง (55%)")
+                smooth_progress(progress_bar, 25, 55, "🌐 ระบบกำลังสืบค้นและคัดกรองเนื้อหาที่ไม่เกี่ยวข้องทิ้งอย่างเด็ดขาด (55%)")
                 
                 references = []
                 if search_query:
-                    references = cached_search(search_query, locations, core_keywords, original_url)
+                    references = cached_search(search_query, locations, core_keywords, target_year, original_url)
                 
-                st.markdown(f"🔎 **ดึงแหล่งอ้างอิงที่น่าจะเกี่ยวข้องมาได้ทั้งหมด {len(references)} แหล่ง**")
-                smooth_progress(progress_bar, 55, 85, "⚖️ AI กำลังวิเคราะห์แยกแยะห้วงเวลา (Timeline) อย่างละเอียด (85%)")
-                st.markdown("⚖️ **กำลังเทียบเคียงหลักฐานและคัดทิ้งข่าวเก่า...**")
+                st.markdown(f"🔎 **ดึงแหล่งข้อมูลมาได้ {len(references)} แหล่ง เพื่อเข้าสู่กระบวนการเปรียบเทียบ**")
+                smooth_progress(progress_bar, 55, 85, "⚖️ AI กำลังวิเคราะห์และเปรียบเทียบเนื้อหาอย่างละเอียด (85%)")
+                st.markdown("⚖️ **กำลังประเมินความสอดคล้อง/ความขัดแย้งของข้อมูล...**")
                 
                 ai_dict = cached_analyze(news_content, references, current_date_str, original_url)
                 if ai_dict:
                     result_dict = ai_dict
                     total_time_taken = round(time.time() - start_process_time, 2)
                     progress_bar.progress(100, text=f"ประเมินเสร็จสมบูรณ์ (100%) (ใช้เวลา {total_time_taken} วินาที)")
-                    st.markdown("✨ **ประเมินผลสำเร็จ!**")
+                    st.markdown("✨ **การเปรียบเทียบเสร็จสมบูรณ์!**")
     
-    # ================= 7. การแสดงผลลัพธ์ (โชว์ลิงก์เน้นๆ) =================
-    has_system_error = "Error" in result_dict.get("ai_insights", "") or "โครงสร้างข้อมูลผิดพลาด" in result_dict.get("ai_insights", "")
+    # ================= 7. การแสดงผลลัพธ์ =================
+    has_system_error = "Error" in result_dict.get("comparative_analysis", "") or "โครงสร้างข้อมูลผิดพลาด" in result_dict.get("comparative_analysis", "")
     
     if has_system_error:
         st.error("⚠️ **ระบบวิเคราะห์ขัดข้อง:** โมเดล AI ประมวลผลผิดพลาดหรือไม่สามารถเชื่อมต่อได้")
-        with st.expander("ดูข้อมูลข้อผิดพลาด"): st.write(result_dict.get("ai_insights", ""))
+        with st.expander("ดูข้อมูลข้อผิดพลาด"): st.write(result_dict.get("comparative_analysis", ""))
     else:
         pct, color, bg_color, border_color, label = get_score_ui_config(result_dict.get("score"))
         score_card_html = f"""
         <div style="text-align: center; padding: 30px; background-color: {bg_color}; border-radius: 16px; margin-bottom: 30px; border: 2px solid {border_color}; margin-top: 20px;">
-            <p style="margin: 0; font-size: 1.2rem; font-weight: 500; opacity: 0.8; color: #334155;">ความน่าเชื่อถือของเนื้อหา</p>
+            <p style="margin: 0; font-size: 1.2rem; font-weight: 500; opacity: 0.8; color: #334155;">ความสอดคล้องเมื่อเทียบกับแหล่งอ้างอิง</p>
             <h1 style="margin: 15px 0; font-size: 6rem; color: {color}; font-weight: 700; line-height: 1;">{pct}</h1>
             <span style="background-color: {color}; color: white; padding: 8px 24px; border-radius: 30px; font-weight: 500; font-size: 1.15rem; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">{label}</span>
         </div>
         """
         st.markdown(score_card_html, unsafe_allow_html=True)
 
-        st.markdown(f"### 🎯 สรุปคำตัดสิน (Verdict)\n**{result_dict.get('verdict_summary', 'ไม่มีข้อมูลสรุป')}**")
+        st.markdown(f"### 🎯 สรุปผลการเปรียบเทียบ\n**{result_dict.get('verdict_summary', 'ไม่มีข้อมูลสรุป')}**")
         st.write("")
 
         col1, col2 = st.columns(2)
         with col1:
             with st.container(border=True):
-                st.markdown("<h4 style='color: #15803d;'>✅ ส่วนที่เป็นความจริง</h4>", unsafe_allow_html=True)
-                facts = result_dict.get("facts", [])
-                if facts and isinstance(facts, list) and facts[0] != "ไม่พบข้อมูลส่วนที่เป็นความจริง":
+                st.markdown("<h4 style='color: #15803d;'>✅ ประเด็นที่สอดคล้องกับสื่อหลัก</h4>", unsafe_allow_html=True)
+                facts = result_dict.get("supported_points", [])
+                if facts and isinstance(facts, list) and facts[0] != "ไม่พบข้อมูลที่สอดคล้องกับแหล่งอ้างอิง":
                     for f in facts: st.markdown(f"- {f}")
-                else: st.markdown("- *ไม่พบข้อมูลที่ยืนยันได้ว่าเป็นความจริง*")
+                else: st.markdown("- *ไม่พบประเด็นที่สอดคล้องกับแหล่งอ้างอิง*")
                 
         with col2:
             with st.container(border=True):
-                st.markdown("<h4 style='color: #b91c1c;'>❌ ส่วนที่บิดเบือน / ไร้หลักฐาน</h4>", unsafe_allow_html=True)
-                dists = result_dict.get("distortions", [])
-                if dists and isinstance(dists, list) and dists[0] != "ไม่พบข้อมูลส่วนที่บิดเบือน หรือข้อมูลไม่เพียงพอ":
+                st.markdown("<h4 style='color: #b91c1c;'>❌ ประเด็นที่ขัดแย้ง / ไร้แหล่งอ้างอิง</h4>", unsafe_allow_html=True)
+                dists = result_dict.get("conflicting_points", [])
+                if dists and isinstance(dists, list) and dists[0] != "ไม่พบข้อมูลที่ขัดแย้ง หรือแหล่งอ้างอิงไม่เพียงพอต่อการเปรียบเทียบ":
                     for d in dists: st.markdown(f"- {d}")
-                else: st.markdown("- *ไม่พบข้อมูลส่วนที่บิดเบือนอย่างชัดเจน*")
+                else: st.markdown("- *ไม่พบประเด็นที่ขัดแย้งอย่างชัดเจน*")
 
         st.write("")
         
         with st.container(border=True):
-            st.markdown("### 🕵️‍♂️ บทวิเคราะห์เชิงลึกจาก AI")
-            st.markdown(result_dict.get('ai_insights', 'ไม่มีบทวิเคราะห์เพิ่มเติม'))
+            st.markdown("### 📊 บทวิเคราะห์การเปรียบเทียบเชิงลึกจาก AI")
+            st.markdown(result_dict.get('comparative_analysis', 'ไม่มีบทวิเคราะห์เพิ่มเติม'))
 
         rel_ids = result_dict.get("relevant_ref_ids", [])
         
         with st.container(border=True):
-            st.subheader("📚 แหล่งอ้างอิงที่ตรวจสอบแล้ว (Verified Sources)")
+            st.subheader("📚 แหล่งข้อมูลที่ใช้ในการเปรียบเทียบ")
             
             verified_refs = []
             if references:
@@ -293,15 +290,14 @@ if news_content:
                     if any(str(idx + 1) == str(rel_id) for rel_id in rel_ids):
                         verified_refs.append(ref)
                 
-                # ตาข่ายนิรภัย: ถ้า AI บอกว่าจริง แต่ไม่ได้ใส่รหัสมา ให้เอาข่าว Top โชว์เลย
-                if not verified_refs and result_dict.get("score", 1) >= 3:
+                if not verified_refs and references:
                     verified_refs = references[:5] 
                     
             if verified_refs:
                 for idx, ref in enumerate(verified_refs):
                     st.markdown(f"{idx+1}. [{ref.get('title', 'ลิงก์อ้างอิง')}]({ref.get('href', '#')})")
             else:
-                st.info("ไม่พบข่าวสารจากสื่อหลัก หรือประกาศจากหน่วยงานรัฐที่มีเนื้อหาตรงกับเหตุการณ์นี้ (ข่าวที่ค้นพบมาจากคนละสถานที่หรือคนละไทม์ไลน์) จึงประเมินว่าข้อความนี้ไร้หลักฐานยืนยัน")
+                st.info("ไม่พบข่าวสารจากสื่อหลัก หรือประกาศจากหน่วยงานรัฐที่มีเนื้อหาสอดคล้องเพียงพอต่อการเปรียบเทียบ จึงประเมินว่าข้อความนี้ขาดหลักฐานสนับสนุน")
 
     try:
         log_input_data = original_url if original_url else news_content
