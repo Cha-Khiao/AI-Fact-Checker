@@ -10,20 +10,44 @@ import requests
 load_dotenv()
 
 from scraper import extract_text_from_url
-from search import search_news_references
-from llm import analyze_intent_and_plan_search, analyze_news_with_qwen, critic_review_analysis
+from search import search_news_references_with_diagnostics
+from llm import (
+    analyze_intent_and_plan_search,
+    analyze_news_with_qwen,
+    get_runtime_config,
+    is_openrouter_configured,
+)
+from evaluation import (
+    build_display_score,
+    get_verdict_ui_config,
+    select_display_references,
+)
 
 # ================= 1. ตั้งค่า Cache =================
+# Bump this token whenever retrieval/relevance/document rules change so cached
+# results produced by the previous rules are invalidated instead of re-served.
+_PIPELINE_CACHE_VERSION = "2026-08-13-html-only-topical-floor-v2"
+
 def cached_extract_text(url): return extract_text_from_url(url)
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def cached_plan_search(text): return analyze_intent_and_plan_search(text)
+def cached_plan_search(text, _cache_version=_PIPELINE_CACHE_VERSION):
+    return analyze_intent_and_plan_search(text)
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def cached_search(query, locations, core_keywords, target_year, source_url=""): return search_news_references(query, locations, core_keywords, target_year, num_results=10, source_url=source_url)
+def cached_search(query, locations, core_keywords, target_year, source_url="", _cache_version=_PIPELINE_CACHE_VERSION):
+    return search_news_references_with_diagnostics(
+        query,
+        locations,
+        core_keywords,
+        target_year,
+        num_results=12,
+        source_url=source_url,
+    )
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def cached_analyze(news_text, references, current_date, source_url=""): return analyze_news_with_qwen(news_text, references, current_date, source_url)
+def cached_analyze(news_text, references, current_date, source_url="", _cache_version=_PIPELINE_CACHE_VERSION):
+    return analyze_news_with_qwen(news_text, references, current_date, source_url)
 
 def smooth_progress(progress_bar, start_val, end_val, text_label, delay=0.001):
     for i in range(start_val, end_val + 1):
@@ -59,14 +83,14 @@ with st.sidebar:
     ระบบจะทำการสกัดคำสำคัญและแปลงเป็น 'ภาษาราชการ' โดยอัตโนมัติ เพื่อให้สามารถสืบค้นประกาศจากเว็บไซต์ของรัฐ (go.th) และสื่อหลักได้อย่างแม่นยำ
     """)
     
-    with st.expander("ℹ️ มาตรฐานการประเมิน (IFCN)"):
+    with st.expander("ℹ️ หลักการและข้อจำกัดของการประเมิน"):
         st.markdown("""
-        ประยุกต์ใช้ตรรกะ **Truth-O-Meter**:
-        *   **95%:** สอดคล้องกับสื่อหลักชัดเจน
-        *   **75%:** สอดคล้องส่วนใหญ่ (มีคลาดเคลื่อนเล็กน้อย)
-        *   **50%:** ข้อมูลก้ำกึ่ง ไม่ชัดเจน
-        *   **25%:** ข้อมูลบิดเบือนไปจากสื่อหลัก
-        *   **10%:** ข่าวปลอม / ไร้แหล่งอ้างอิงสนับสนุน
+        ระบบแสดงผลตามหลักฐานที่ค้นพบเป็น **สนับสนุน / ข้อมูลผสม / ขัดแย้ง / หลักฐานไม่เพียงพอ**
+
+        - เปอร์เซ็นต์ที่แสดงคือ **คะแนนความสอดคล้องกับข้อมูลที่ตรวจพบ** ไม่ใช่โอกาสที่ข่าวเป็นจริง
+        - การไม่พบหลักฐาน **ไม่เท่ากับ** ข่าวเท็จ
+        - ผลจากหลักฐานเพียงแหล่งเดียวจะแสดงเป็นผลเบื้องต้น
+        - โครงการนำหลักความโปร่งใสของแหล่งข้อมูลและวิธีทำงานมาใช้ออกแบบ แต่ยังไม่ได้รับการรับรองจาก IFCN หรือ ISO
         """)
         
     st.divider()
@@ -75,27 +99,12 @@ with st.sidebar:
         st.cache_data.clear()
         st.success("✅ ล้างหน่วยความจำสำเร็จ!")
 
-# ================= 4. ฟังก์ชันจัดการคะแนน =================
-def get_score_ui_config(level):
-    try: level = int(level)
-    except: return "N/A", "#94a3b8", "rgba(148, 163, 184, 0.1)", "rgba(148, 163, 184, 0.4)", "ไม่สามารถประเมินได้"
-        
-    if level == 5: return "95%", "#10b981", "rgba(16, 185, 129, 0.1)", "rgba(16, 185, 129, 0.4)", "สอดคล้องกับสื่อหลัก (น่าเชื่อถือสูง)"
-    elif level == 4: return "75%", "#10b981", "rgba(16, 185, 129, 0.1)", "rgba(16, 185, 129, 0.4)", "สอดคล้องส่วนใหญ่"
-    elif level == 3: return "50%", "#f59e0b", "rgba(245, 158, 11, 0.1)", "rgba(245, 158, 11, 0.4)", "ข้อมูลก้ำกึ่ง / ขัดแย้งบางส่วน"
-    elif level == 2: return "25%", "#ef4444", "rgba(239, 68, 68, 0.1)", "rgba(239, 68, 68, 0.4)", "ข้อมูลบิดเบือนไปจากสื่อหลัก"
-    elif level == 1: return "10%", "#ef4444", "rgba(239, 68, 68, 0.1)", "rgba(239, 68, 68, 0.4)", "ข่าวขัดแย้ง / ไร้ข้อมูลอ้างอิง"
-    return "N/A", "#94a3b8", "rgba(148, 163, 184, 0.1)", "rgba(148, 163, 184, 0.4)", "ไม่สามารถประเมินได้"
-
-def save_system_log(input_type, input_data, search_query, references, ai_result_dict, process_time):
+# ================= 4. ฟังก์ชันบันทึกผล =================
+def save_system_log(input_type, input_data, search_query, references, ai_result_dict, process_time, stage_timings=None):
     webhook_url = os.getenv("GSHEETS_WEBHOOK_URL", "")
     if "GSHEETS_WEBHOOK_URL" in st.secrets: webhook_url = st.secrets.get("GSHEETS_WEBHOOK_URL", webhook_url)
     if not webhook_url: return 
     
-    level = str(ai_result_dict.get("score", "N/A"))
-    pct_map = {"5": "95%", "4": "75%", "3": "50%", "2": "25%", "1": "10%"}
-    score_log = f"ระดับ {level} ({pct_map.get(level, 'N/A')})" if level in pct_map else "N/A"
-        
     short_input = input_data[:200].replace('\n', ' ') + "..." if len(input_data) > 200 else input_data.replace('\n', ' ')
     ref_details = " | ".join([f"{idx+1}. {r['title']} ({r['href']})" for idx, r in enumerate(references)]) if references else "ไม่พบอ้างอิงสืบค้น"
     current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -103,7 +112,9 @@ def save_system_log(input_type, input_data, search_query, references, ai_result_
     payload = {
         "timestamp": current_time, "input_type": input_type, "short_input": short_input,
         "search_query": search_query, "ref_count": len(references), "ref_details": ref_details,
-        "score": score_log, "process_time": round(process_time, 2)
+        "verdict": ai_result_dict.get("verdict", "NOT_EVALUATED"),
+        "evidence_sufficiency": ai_result_dict.get("evidence_sufficiency", "NOT_APPLICABLE"),
+        "process_time": round(process_time, 2), "stage_timings": stage_timings or {},
     }
     threading.Thread(target=lambda: requests.post(webhook_url, json=payload, timeout=10, allow_redirects=True) if webhook_url else None, daemon=True).start()
 
@@ -116,6 +127,8 @@ st.markdown("""<div style='text-align: center; margin-bottom: 2rem;'>
 tab1, tab2 = st.tabs(["🌐 ตรวจสอบจากลิงก์ (URL)", "📄 ตรวจสอบจากข้อความ"])
 
 news_content, original_url, url_input, input_method_used = "", "", "", ""
+request_started_at = None
+stage_timings = {}
 VIDEO_PATTERNS = [r'youtube\.com/watch', r'youtu\.be', r'youtube\.com/shorts', r'tiktok\.com', r'vt\.tiktok\.com', r'vm\.tiktok\.com', r'fb\.watch', r'facebook\.com/.*/videos/', r'/share/v/', r'/share/r/', r'vimeo\.com', r'dailymotion\.com']
 
 with tab1:
@@ -127,6 +140,7 @@ with tab1:
         
     if btn_url:
         if url_input:
+            request_started_at = time.perf_counter()
             input_method_used = "URL Link"
             url_match = re.search(r'(https?://[a-zA-Z0-9./?=_%&+\-#]+)', url_input)
             clean_url = url_match.group(1).rstrip('.,;!?)\'"]') if url_match else url_input.strip()
@@ -135,7 +149,9 @@ with tab1:
                 original_url = clean_url
             else:
                 with st.spinner("⏳ กำลังเชื่อมต่อและสกัดเนื้อหาจากเว็บไซต์ปลายทาง..."):
+                    stage_started_at = time.perf_counter()
                     extracted_data = cached_extract_text(clean_url)
+                    stage_timings["extract_seconds"] = round(time.perf_counter() - stage_started_at, 3)
                     if isinstance(extracted_data, dict):
                         news_content = extracted_data.get("error", extracted_data.get("content", ""))
                         original_url = extracted_data.get("actual_url", clean_url)
@@ -152,25 +168,40 @@ with tab2:
         
     if btn_text:
         if text_input.strip():
+            request_started_at = time.perf_counter()
             input_method_used = "Direct Text"
             news_content = text_input
+            stage_timings["extract_seconds"] = 0.0
         else: st.warning("⚠️ กรุณาระบุเนื้อหาก่อนทำการวิเคราะห์")
 
 # ================= 6. ส่วนประมวลผลหลัก =================
 if news_content:
-    if not os.getenv("OPENROUTER_API_KEY"):
+    if not is_openrouter_configured():
         st.error("❌ ไม่พบ OPENROUTER_API_KEY ในระบบ")
         st.stop()
         
     st.divider()
-    start_process_time = time.time()
+    start_process_time = request_started_at or time.perf_counter()
+
+    def elapsed_process_time():
+        return round(time.perf_counter() - start_process_time, 3)
     
     months_th = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."]
     now = datetime.datetime.now()
     current_date_str = f"{now.day} {months_th[now.month - 1]} {now.year + 543}"
     
     references = []
-    result_dict = {"verdict_summary": "N/A", "supported_points": [], "conflicting_points": [], "comparative_analysis": "N/A", "score": "N/A", "relevant_ref_ids": []}
+    search_report = {
+        "status": "SKIPPED",
+        "references": [],
+        "counts": {"raw": 0, "deduplicated": 0, "relevant": 0, "returned": 0},
+        "excluded_counts": {},
+    }
+    result_dict = {
+        "verdict_summary": "N/A", "supported_points": [], "conflicting_points": [],
+        "comparative_analysis": "N/A", "score": None, "verdict": "NOT_EVALUATED",
+        "evidence_sufficiency": "NOT_APPLICABLE", "relevant_ref_ids": [],
+    }
     search_query = "SKIP_SEARCH"
     total_time_taken = 0.0
     
@@ -181,62 +212,78 @@ if news_content:
         st.markdown("### ⚙️ กระบวนการทำงานของระบบ")
             
         if news_content == "VIDEO_DETECTED":
-            total_time_taken = round(time.time() - start_process_time, 2)
+            total_time_taken = elapsed_process_time()
             smooth_progress(progress_bar, 5, 100, f"ประเมินเสร็จสมบูรณ์ (100%)")
             st.markdown("🛡️ **ตรวจพบวิดีโอคลิป**\n\nระบบยังไม่รองรับการถอดเสียงอัตโนมัติ กรุณาคัดลอกข้อความมาวางแทน")
-            result_dict.update({"verdict_summary": "พบวิดีโอคลิป"})
+            result_dict.update({"verdict": "NOT_EVALUATED", "verdict_summary": "พบวิดีโอคลิป"})
             
         elif news_content == "GAMBLING_DETECTED":
-            total_time_taken = round(time.time() - start_process_time, 2)
+            total_time_taken = elapsed_process_time()
             smooth_progress(progress_bar, 5, 100, f"ประเมินเสร็จสมบูรณ์ (100%)")
             st.markdown("🚫 **ระงับการเชื่อมต่อ**\n\nตรวจพบความเสี่ยงจากลิงก์อันตราย")
-            result_dict.update({"score": 1, "verdict_summary": "เนื้อหามีความเสี่ยงต่อความปลอดภัย"})
+            result_dict.update({"verdict": "NOT_EVALUATED", "verdict_summary": "เนื้อหามีความเสี่ยงต่อความปลอดภัย"})
             
         elif "ทะลวงระบบ" in news_content or "Error:" in news_content or "SOCIAL_BLOCKED" in news_content:
-            total_time_taken = round(time.time() - start_process_time, 2)
+            total_time_taken = elapsed_process_time()
             smooth_progress(progress_bar, 5, 100, f"ประเมินเสร็จสมบูรณ์ (100%)")
             st.markdown("⚠️ **ต้นทางปฏิเสธการเข้าถึง**\n\nเว็บไซต์หรือโพสต์ถูกตั้งเป็นส่วนตัว กรุณานำข้อความมาวางตรวจสอบโดยตรง")
-            result_dict.update({"verdict_summary": "ไม่สามารถดึงข้อมูลได้"})
+            result_dict.update({"verdict": "NOT_EVALUATED", "verdict_summary": "ไม่สามารถดึงข้อมูลได้"})
             
         elif news_content in ["LINK_UNSUPPORTED", "EMPTY_CONTENT"] or "ไม่สามารถดึงข้อมูล" in news_content or re.search(r'(Error 404|404 Not Found|Page Not Found)', news_content, re.IGNORECASE):
-            total_time_taken = round(time.time() - start_process_time, 2)
+            total_time_taken = elapsed_process_time()
             smooth_progress(progress_bar, 5, 100, f"ประเมินเสร็จสมบูรณ์ (100%)")
             st.markdown("⚠️ **ไม่พบเนื้อหา**\n\nลิงก์ดังกล่าวไม่มีข้อความข่าวสารที่สามารถตรวจสอบได้")
-            result_dict.update({"verdict_summary": "ไม่มีเนื้อหา"})
+            result_dict.update({"verdict": "NOT_EVALUATED", "verdict_summary": "ไม่มีเนื้อหา"})
             
         else:
             smooth_progress(progress_bar, 5, 25, "🧠 AI กำลังสกัดคีย์เวิร์ดและแปลงเป็นภาษาราชการ (25%)")
             text_for_keyword = news_content.split("]:\n")[-1] if "[เนื้อหาข่าวจริง" in news_content else news_content
             
+            stage_started_at = time.perf_counter()
             action, search_query, topic_summary, locations, core_keywords, target_year = cached_plan_search(text_for_keyword)
+            stage_timings["plan_seconds"] = round(time.perf_counter() - stage_started_at, 3)
 
             if action == "DROP":
-                total_time_taken = round(time.time() - start_process_time, 2)
+                total_time_taken = elapsed_process_time()
                 smooth_progress(progress_bar, 25, 100, f"ประเมินเสร็จสมบูรณ์ (100%)")
                 st.markdown(f"⏭️ **ยุติการตรวจสอบ:** {search_query}")
                 search_query = "SKIP_SEARCH"
-                result_dict.update({"verdict_summary": "เนื้อหาทั่วไป/เรื่องส่วนตัว"})
+                result_dict.update({"verdict": "NOT_EVALUATED", "verdict_summary": "เนื้อหาทั่วไป/เรื่องส่วนตัว"})
             else:
                 st.markdown(f"📌 **ประเด็นที่วิเคราะห์:** {topic_summary}")
                 
                 loc_str = ", ".join(locations) if locations else "ไม่ระบุ"
                 kw_str = ", ".join(core_keywords) if core_keywords else "ไม่ระบุ"
-                st.info(f"🔑 **คีย์เวิร์ดที่ใช้ค้นหา (รวมคำพ้อง):** `{kw_str}`\n📍 **พื้นที่:** `{loc_str}` | 📅 **ปีเป้าหมาย:** `{target_year}`")
+                year_str = target_year or "ไม่ระบุในข้อความต้นฉบับ"
+                st.info(f"🔑 **คีย์เวิร์ดที่ใช้ค้นหา (รวมคำพ้อง):** `{kw_str}`\n📍 **พื้นที่:** `{loc_str}` | 📅 **ปีเป้าหมาย:** `{year_str}`")
                 
                 smooth_progress(progress_bar, 25, 55, "🌐 ระบบกำลังสืบค้นเว็บรัฐบาลและสื่อหลัก (55%)")
                 
                 references = []
                 if search_query:
-                    references = cached_search(search_query, locations, core_keywords, target_year, original_url)
+                    stage_started_at = time.perf_counter()
+                    search_report = cached_search(
+                        search_query, locations, core_keywords, target_year, original_url
+                    )
+                    references = search_report.get("references", [])
+                    stage_timings["search_seconds"] = round(time.perf_counter() - stage_started_at, 3)
                 
-                st.markdown(f"🔎 **ดึงแหล่งข้อมูลมาได้ {len(references)} แหล่ง เพื่อทำการเปรียบเทียบ**")
+                search_counts = search_report.get("counts", {})
+                st.markdown(
+                    "🔎 **ค้นพบ "
+                    f"{search_counts.get('raw', 0)} ผล · "
+                    f"ผ่านเกณฑ์ความเกี่ยวข้อง {search_counts.get('relevant', 0)} แหล่ง · "
+                    f"คัดให้ AI เปรียบเทียบ {len(references)} แหล่ง**"
+                )
                 smooth_progress(progress_bar, 55, 85, "⚖️ AI กำลังวิเคราะห์และคัดกรองเนื้อหา (85%)")
                 st.markdown("⚖️ **กำลังประเมินความสอดคล้อง/ความขัดแย้งของข้อมูล...**")
                 
+                stage_started_at = time.perf_counter()
                 ai_dict = cached_analyze(news_content, references, current_date_str, original_url)
+                stage_timings["analyze_seconds"] = round(time.perf_counter() - stage_started_at, 3)
                 if ai_dict:
                     result_dict = ai_dict
-                    total_time_taken = round(time.time() - start_process_time, 2)
+                    total_time_taken = elapsed_process_time()
                     progress_bar.progress(100, text=f"ประเมินเสร็จสมบูรณ์ (100%) (ใช้เวลา {total_time_taken} วินาที)")
                     st.markdown("✨ **การเปรียบเทียบเสร็จสมบูรณ์!**")
     
@@ -247,60 +294,139 @@ if news_content:
         st.error("⚠️ **ระบบวิเคราะห์ขัดข้อง:** โมเดล AI ประมวลผลผิดพลาดหรือไม่สามารถเชื่อมต่อได้")
         with st.expander("ดูข้อมูลข้อผิดพลาด"): st.write(result_dict.get("comparative_analysis", ""))
     else:
-        pct, color, bg_color, border_color, label = get_score_ui_config(result_dict.get("score"))
+        label, color, bg_color, border_color = get_verdict_ui_config(result_dict.get("verdict"))
+        rel_ids = result_dict.get("relevant_ref_ids", [])
+        display_references = select_display_references(
+            references, rel_ids, max_items=10
+        )
+        primary_references = display_references[:5]
+        additional_references = display_references[5:]
+        display_score = build_display_score(result_dict)
+        score_value = display_score.get("value")
+        score_text = f"{score_value}%" if display_score.get("computable") else "—"
+        score_progress = score_value if isinstance(score_value, int) else 0
         score_card_html = f"""
-        <div style="text-align: center; padding: 30px; background-color: {bg_color}; border-radius: 16px; margin-bottom: 30px; border: 2px solid {border_color}; margin-top: 20px;">
-            <p style="margin: 0; font-size: 1.2rem; font-weight: 500; opacity: 0.8; color: #334155;">ความสอดคล้องเมื่อเทียบกับแหล่งอ้างอิง</p>
-            <h1 style="margin: 15px 0; font-size: 6rem; color: {color}; font-weight: 700; line-height: 1;">{pct}</h1>
-            <span style="background-color: {color}; color: white; padding: 8px 24px; border-radius: 30px; font-weight: 500; font-size: 1.15rem; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">{label}</span>
+        <div style="display:flex; align-items:center; justify-content:center; gap:28px; flex-wrap:wrap; padding:26px; background-color:{bg_color}; border-radius:18px; margin:20px 0 14px; border:2px solid {border_color};">
+            <div style="width:142px; height:142px; border-radius:50%; display:flex; align-items:center; justify-content:center; background:conic-gradient({color} 0 {score_progress}%, #e2e8f0 {score_progress}% 100%);">
+                <div style="width:112px; height:112px; border-radius:50%; display:flex; align-items:center; justify-content:center; background:#ffffff; color:{color}; font-size:2.15rem; font-weight:700;">{score_text}</div>
+            </div>
+            <div style="text-align:left; max-width:390px;">
+                <p style="margin:0 0 6px; font-size:0.95rem; color:#475569;">ผลตรวจข่าว</p>
+                <h1 style="margin:0; font-size:2rem; color:{color}; font-weight:700; line-height:1.3;">{label}</h1>
+                <p style="margin:9px 0 0; color:#475569;">คะแนนความสอดคล้องกับข้อมูลที่ตรวจพบ</p>
+            </div>
         </div>
         """
         st.markdown(score_card_html, unsafe_allow_html=True)
+        st.caption("คะแนนนี้ไม่ใช่โอกาสที่ข่าวเป็นจริง และไม่ใช่คำรับรองจาก IFCN หรือ ISO")
+
+        claim_assessments = result_dict.get("claim_assessments", [])
+        claim_assessments = claim_assessments if isinstance(claim_assessments, list) else []
+        supported_claims = sum(
+            1 for claim in claim_assessments
+            if claim.get("verdict") in {"SUPPORTED", "MOSTLY_SUPPORTED"}
+        )
+        context_claims = sum(
+            1 for claim in claim_assessments
+            if claim.get("verdict") in {"MIXED", "MOSTLY_CONTRADICTED", "CONTRADICTED"}
+        )
+        metric_col1, metric_col2, metric_col3 = st.columns(3)
+        metric_col1.metric("✅ ประเด็นที่ตรง", supported_claims)
+        metric_col2.metric("⚠️ ต้องดูบริบท", context_claims)
+        metric_col3.metric("🔗 แหล่งที่แสดง", len(display_references))
 
         st.markdown(f"### 🎯 สรุปผลการเปรียบเทียบ\n**{result_dict.get('verdict_summary', 'ไม่มีข้อมูลสรุป')}**")
         st.write("")
 
-        col1, col2 = st.columns(2)
-        with col1:
-            with st.container(border=True):
+        with st.expander("ดูรายละเอียดการวิเคราะห์และหลักฐานรายข้อ"):
+            if claim_assessments:
+                st.markdown("### 🧾 ตารางหลักฐานรายข้อกล่าวอ้าง")
+                for index, claim in enumerate(claim_assessments, start=1):
+                    claim_label, claim_color, _, _ = get_verdict_ui_config(claim.get("verdict"))
+                    st.markdown(
+                        f"**{index}. {claim.get('claim_text', 'ไม่ระบุข้อกล่าวอ้าง')}**  \n"
+                        f"<span style='color:{claim_color}; font-weight:600;'>{claim_label}</span>",
+                        unsafe_allow_html=True,
+                    )
+                    st.caption(
+                        f"หลักฐานสนับสนุน: {claim.get('supporting_ref_ids', []) or 'ไม่มี'} | "
+                        f"หลักฐานขัดแย้ง: {claim.get('conflicting_ref_ids', []) or 'ไม่มี'}"
+                    )
+                    st.write(claim.get("explanation", "ไม่มีคำอธิบาย"))
+                    if index < len(claim_assessments):
+                        st.divider()
+            col1, col2 = st.columns(2)
+            with col1:
                 st.markdown("<h4 style='color: #15803d;'>✅ ประเด็นที่สอดคล้องกับสื่อหลัก</h4>", unsafe_allow_html=True)
                 facts = result_dict.get("supported_points", [])
                 if facts and isinstance(facts, list) and facts[0] != "ไม่พบข้อมูลที่สอดคล้องกับแหล่งอ้างอิง":
                     for f in facts: st.markdown(f"- {f}")
                 else: st.markdown("- *ไม่พบประเด็นที่สอดคล้องกับแหล่งอ้างอิง*")
-                
-        with col2:
-            with st.container(border=True):
+            with col2:
                 st.markdown("<h4 style='color: #b91c1c;'>❌ ประเด็นที่ขัดแย้ง</h4>", unsafe_allow_html=True)
                 dists = result_dict.get("conflicting_points", [])
                 if dists and isinstance(dists, list) and dists[0] != "ไม่พบข้อมูลที่ขัดแย้ง หรือแหล่งอ้างอิงไม่เพียงพอต่อการเปรียบเทียบ":
                     for d in dists: st.markdown(f"- {d}")
                 else: st.markdown("- *ไม่พบประเด็นที่ขัดแย้งอย่างชัดเจน*")
-
-        st.write("")
-        
-        with st.container(border=True):
+            st.divider()
             st.markdown("### 📊 บทวิเคราะห์การเปรียบเทียบเชิงลึกจาก AI")
             st.markdown(result_dict.get('comparative_analysis', 'ไม่มีบทวิเคราะห์เพิ่มเติม'))
 
-        rel_ids = result_dict.get("relevant_ref_ids", [])
-        
         with st.container(border=True):
-            st.subheader("📚 แหล่งข้อมูลที่เกี่ยวข้องจริงๆ ที่นำมาใช้เปรียบเทียบ")
-            
-            verified_refs = []
-            if references:
-                for idx, ref in enumerate(references):
-                    if any(str(idx + 1) == str(rel_id) for rel_id in rel_ids):
-                        verified_refs.append(ref)
-                        
-            if verified_refs:
-                for idx, ref in enumerate(verified_refs):
-                    st.markdown(f"{idx+1}. [{ref.get('title', 'ลิงก์อ้างอิง')}]({ref.get('href', '#')})")
+            st.subheader("📚 แหล่งข้อมูลที่เกี่ยวข้อง")
+            search_counts = search_report.get("counts", {})
+            st.caption(
+                f"ค้นพบ {search_counts.get('raw', 0)} ผล · "
+                f"ผ่านเกณฑ์ความเกี่ยวข้อง {search_counts.get('relevant', 0)} แหล่ง · "
+                f"AI อ้างโดยตรง {len(rel_ids)} แหล่ง"
+            )
+
+            if primary_references:
+                for idx, ref in enumerate(primary_references, start=1):
+                    role_label = (
+                        "อ้างอิงโดยตรง" if ref.get("display_role") == "cited"
+                        else "แหล่งเกี่ยวข้องเพิ่มเติม"
+                    )
+                    st.markdown(
+                        f"{idx}. [{ref.get('title', 'ลิงก์อ้างอิง')}]({ref.get('href', '#')})"
+                    )
+                    st.caption(
+                        f"{role_label} · {ref.get('source_domain', 'ไม่ระบุ')} · "
+                        f"{ref.get('pub_date', 'ไม่ระบุ')}"
+                    )
+                if len(primary_references) < 3:
+                    st.warning(
+                        "พบแหล่งที่ผ่านเกณฑ์ความเกี่ยวข้องน้อยกว่า 3 แหล่ง "
+                        "ระบบจะไม่เติมลิงก์ที่ไม่เกี่ยวข้องเพียงเพื่อให้ครบจำนวน"
+                    )
             else:
-                st.info("ไม่พบข่าวสารจากสื่อหลักและภาครัฐในสารบบที่มีเนื้อหาเหตุการณ์ตรงกับข้อความต้นฉบับเพียงพอต่อการนำมาเปรียบเทียบ (ระบบได้คัดกรองข่าวคนละสถานที่ และข่าวเก่าทิ้งไปอย่างเด็ดขาดแล้ว) จึงประเมินว่าข้อความนี้ขาดหลักฐานสนับสนุน")
+                st.info("ระบบยังไม่พบหลักฐานที่เกี่ยวข้องเพียงพอ จึงงดตัดสินว่าข้อความเป็นจริงหรือเท็จ โปรดลองตรวจสอบกับแหล่งปฐมภูมิหรือค้นหาเพิ่มเติม")
+
+            if additional_references:
+                with st.expander(f"ดูแหล่งเกี่ยวข้องเพิ่มเติมอีก {len(additional_references)} แหล่ง"):
+                    for idx, ref in enumerate(additional_references, start=6):
+                        st.markdown(
+                            f"{idx}. [{ref.get('title', 'ลิงก์อ้างอิง')}]({ref.get('href', '#')})"
+                        )
+                        st.caption(
+                            f"{ref.get('source_domain', 'ไม่ระบุ')} · "
+                            f"{ref.get('pub_date', 'ไม่ระบุ')}"
+                        )
+
+    total_time_taken = total_time_taken or elapsed_process_time()
+    stage_timings["total_seconds"] = total_time_taken
+    runtime_config = get_runtime_config()
+    with st.expander("🔎 ความโปร่งใสของการประมวลผลและเวลา"):
+        st.markdown("**เวลาที่วัดได้ในคำขอนี้**")
+        st.json(stage_timings)
+        st.markdown("**การตั้งค่าโมเดลที่ไม่เป็นความลับ**")
+        st.json(runtime_config)
+        request_meta = result_dict.get("_request_meta")
+        if request_meta:
+            st.markdown("**ข้อมูลการใช้งานที่ OpenRouter ส่งกลับ**")
+            st.json(request_meta)
 
     try:
         log_input_data = original_url if original_url else news_content
-        save_system_log(input_method_used, log_input_data, search_query, references, result_dict, total_time_taken)
+        save_system_log(input_method_used, log_input_data, search_query, references, result_dict, total_time_taken, stage_timings)
     except Exception: pass
