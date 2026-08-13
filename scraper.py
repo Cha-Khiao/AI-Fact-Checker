@@ -1,15 +1,73 @@
 import os
 import re
 import json
+import ipaddress
 import concurrent.futures
 from bs4 import BeautifulSoup
-from urllib.parse import unquote, quote, urlparse, parse_qs
+from urllib.parse import unquote, quote, urljoin, urlparse, parse_qs
 from curl_cffi import requests
 
 try:
     import streamlit as st
 except ImportError:
     st = None
+
+
+ALLOWED_URL_PORTS = {80, 443}
+BLOCKED_HOST_SUFFIXES = (
+    ".local", ".localhost", ".internal", ".lan", ".home", ".onion",
+    ".test", ".invalid", ".example",
+)
+REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
+
+
+def is_safe_public_url(url: str) -> bool:
+    """Reject non-web, credential-bearing, and local/private URL targets."""
+    try:
+        parsed = urlparse(str(url or "").strip())
+        if parsed.scheme.lower() not in {"http", "https"}:
+            return False
+        if parsed.username or parsed.password or not parsed.hostname:
+            return False
+        hostname = parsed.hostname.lower().rstrip(".")
+        if hostname == "localhost" or hostname.endswith(BLOCKED_HOST_SUFFIXES):
+            return False
+        if parsed.port is not None and parsed.port not in ALLOWED_URL_PORTS:
+            return False
+        try:
+            address = ipaddress.ip_address(hostname)
+        except ValueError:
+            address = None
+        if address and (
+            address.is_private or address.is_loopback or address.is_link_local
+            or address.is_multicast or address.is_reserved or address.is_unspecified
+        ):
+            return False
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
+def _safe_get(url: str, *, max_redirects: int = 5, **kwargs):
+    """Follow redirects one hop at a time and validate every destination."""
+    allow_redirects = kwargs.pop("allow_redirects", True)
+    current_url = str(url or "").strip()
+    for _ in range(max_redirects + 1):
+        if not is_safe_public_url(current_url):
+            raise ValueError("URL target is not public HTTP(S)")
+        response = requests.get(current_url, allow_redirects=False, **kwargs)
+        if not allow_redirects or response.status_code not in REDIRECT_STATUS_CODES:
+            return response
+        location = response.headers.get("Location")
+        if not location:
+            return response
+        current_url = urljoin(current_url, location)
+    raise ValueError("Too many redirects")
+
+
+def _hostname_matches(url: str, domains) -> bool:
+    hostname = (urlparse(str(url or "")).hostname or "").lower().removeprefix("www.")
+    return any(hostname == domain or hostname.endswith(f".{domain}") for domain in domains)
 
 def clean_mobile_url(url: str) -> str:
     url = unquote(url.strip())
@@ -64,14 +122,14 @@ def resolve_facebook_redirects(url: str) -> str:
                 "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
             }
-            res = requests.get(url, headers=bot_headers, timeout=8, allow_redirects=False)
+            res = _safe_get(url, headers=bot_headers, timeout=8, allow_redirects=False)
             
             if res.status_code in [301, 302, 303, 307] and 'Location' in res.headers:
                 real_url = res.headers['Location']
                 if "facebook.com/share/" not in real_url.lower() and "login" not in real_url.lower():
                     return real_url
                     
-            res_full = requests.get(url, headers=bot_headers, timeout=8, allow_redirects=True)
+            res_full = _safe_get(url, headers=bot_headers, timeout=8, allow_redirects=True)
             meta_match = re.search(r'http-equiv=["\']?refresh["\']?[^>]*url=["\']?([^"\'>]+)["\']?', res_full.text, re.IGNORECASE)
             if meta_match:
                 refresh_url = meta_match.group(1).replace('&amp;', '&')
@@ -89,7 +147,7 @@ def resolve_facebook_redirects(url: str) -> str:
 
     def try_jina():
         try:
-            jina_req = requests.get(f"https://r.jina.ai/{url}", headers={"Accept": "application/json"}, timeout=8)
+            jina_req = _safe_get(f"https://r.jina.ai/{url}", headers={"Accept": "application/json"}, timeout=8)
             if jina_req.status_code == 200:
                 resolved_url = jina_req.json().get("data", {}).get("url", url)
                 if "facebook.com/share/" not in resolved_url.lower() and "login" not in resolved_url.lower():
@@ -111,7 +169,7 @@ def expand_url(url: str) -> str:
     redirectors = ['shorturl.', 'bit.ly', 'tinyurl.', 't.co', 'cutt.ly', 'rebrand.ly', 'lnkd.in', 'vt.tiktok.com', 'vm.tiktok.com', 'youtu.be', 'line.me', 'liff.line.me']
     if any(r in url.lower() for r in redirectors):
         try:
-            res = requests.get(url, impersonate="safari", allow_redirects=True, timeout=8)
+            res = _safe_get(url, impersonate="safari", allow_redirects=True, timeout=8)
             final_url = res.url
             meta_match = re.search(r'http-equiv=["\']?refresh["\']?[^>]*url=["\']?([^"\'>]+)["\']?', res.text, re.IGNORECASE)
             if meta_match: 
@@ -119,19 +177,19 @@ def expand_url(url: str) -> str:
             js_match = re.search(r'window\.location\.(?:href|replace)\s*=\s*["\'](.*?)["\']', res.text, re.IGNORECASE)
             if js_match: 
                 final_url = js_match.group(1)
-            return final_url
+            return final_url if is_safe_public_url(final_url) else url
         except Exception:
             pass
     return url
 
 def extract_social_metadata(url: str) -> str:
     try:
-        if "x.com/" in url or "twitter.com/" in url:
+        if _hostname_matches(url, ("x.com", "twitter.com")):
             match = re.search(r'(?:x|twitter)\.com(/.*)', url)
             if match:
                 clean_path = match.group(1).split('?')[0] 
                 api_url = "https://api.vxtwitter.com" + clean_path
-                res = requests.get(api_url, impersonate="chrome", timeout=8)
+                res = _safe_get(api_url, impersonate="chrome", timeout=8)
                 if res.status_code == 200:
                     data = res.json()
                     title = data.get("user_name", "ผู้ใช้งาน X")
@@ -140,13 +198,13 @@ def extract_social_metadata(url: str) -> str:
                 else:
                     return f"Error: API ของ X ปฏิเสธการดึงข้อมูล ({res.status_code})"
 
-        elif "instagram.com/" in url:
+        elif _hostname_matches(url, ("instagram.com",)):
             match = re.search(r'instagram\.com/(?:p|reel|tv)/([^/?]+)', url)
             if match:
                 shortcode = match.group(1)
                 embed_url = f"https://www.instagram.com/p/{shortcode}/embed/captioned/"
                 try:
-                    res = requests.get(embed_url, impersonate="chrome", timeout=8)
+                    res = _safe_get(embed_url, impersonate="chrome", timeout=8)
                     if res.status_code == 200:
                         soup = BeautifulSoup(res.text, 'html.parser')
                         caption_div = soup.find(class_='Caption')
@@ -166,7 +224,7 @@ def extract_social_metadata(url: str) -> str:
                 if match_path:
                     clean_path = match_path.group(1).split('?')[0]
                     ig_proxy_url = "https://ddinstagram.com" + clean_path
-                    response = requests.get(ig_proxy_url, impersonate="chrome", timeout=8)
+                    response = _safe_get(ig_proxy_url, impersonate="chrome", timeout=8)
                     if response.status_code == 200:
                         soup = BeautifulSoup(response.text, 'html.parser')
                         og_title = soup.find("meta", property="og:title") or soup.find("meta", attrs={"name": "og:title"})
@@ -181,14 +239,14 @@ def extract_social_metadata(url: str) -> str:
             return "Error: ไม่สามารถทะลวงระบบความปลอดภัยของ Instagram ได้ในขณะนี้"
 
         # --- Facebook ---
-        elif "facebook.com" in url or "fb.watch" in url:
+        elif _hostname_matches(url, ("facebook.com", "fb.watch")):
             clean_url = url
             
             # ⚡ ทำงานขนานกันระหว่าง Iframe, Jina และ Meta
             def fb_iframe():
                 try:
                     embed_url = f"https://www.facebook.com/plugins/post.php?href={quote(clean_url)}&show_text=true"
-                    res_embed = requests.get(embed_url, impersonate="chrome", timeout=8)
+                    res_embed = _safe_get(embed_url, impersonate="chrome", timeout=8)
                     if res_embed.status_code == 200:
                         soup_embed = BeautifulSoup(res_embed.text, 'html.parser')
                         for element in soup_embed(["script", "style", "form", "button", "a"]): 
@@ -205,7 +263,7 @@ def extract_social_metadata(url: str) -> str:
 
             def fb_jina():
                 try:
-                    jina_req = requests.get(f"https://r.jina.ai/{clean_url}", impersonate="chrome", headers={"Accept": "application/json"}, timeout=8)
+                    jina_req = _safe_get(f"https://r.jina.ai/{clean_url}", impersonate="chrome", headers={"Accept": "application/json"}, timeout=8)
                     if jina_req.status_code == 200:
                         jina_data = jina_req.json().get("data", {})
                         title = jina_data.get("title", "")
@@ -222,7 +280,7 @@ def extract_social_metadata(url: str) -> str:
 
             def fb_meta():
                 try:
-                    meta_res = requests.get(clean_url, impersonate="chrome", timeout=8, allow_redirects=True)
+                    meta_res = _safe_get(clean_url, impersonate="chrome", timeout=8, allow_redirects=True)
                     meta_res.encoding = 'utf-8'
                     soup_meta = BeautifulSoup(meta_res.text, 'html.parser')
                     og_title = soup_meta.find("meta", property="og:title") or soup_meta.find("meta", attrs={"name": "og:title"})
@@ -248,7 +306,7 @@ def extract_social_metadata(url: str) -> str:
                         
             return "Error: Facebook บล็อกเนื้อหา (อาจเป็นโพสต์กลุ่มปิด หรือถูกตั้งเป็นส่วนตัว)"
 
-        response = requests.get(url, impersonate="chrome", timeout=8)
+        response = _safe_get(url, impersonate="chrome", timeout=8)
         soup = BeautifulSoup(response.text, 'html.parser')
         
         og_title = soup.find("meta", property="og:title") or soup.find("meta", attrs={"name": "og:title"})
@@ -265,7 +323,7 @@ def extract_social_metadata(url: str) -> str:
 def force_extract_news_link(social_url: str) -> str:
     if "x.com" in social_url.lower() or "twitter.com" in social_url.lower(): return ""
     try:
-        response = requests.get(social_url, impersonate="chrome", timeout=8, allow_redirects=True)
+        response = _safe_get(social_url, impersonate="chrome", timeout=8, allow_redirects=True)
         decoded_html = unquote(response.text)
         whitelist = ['thairath.co.th', 'khaosod.co.th', 'matichon.co.th', 'dailynews.co.th', 'prachachat.net', 'bangkokbiznews.com', 'mgronline.com', 'thaipbs.or.th', 'pptvhd36.com', 'ch7.com', 'thestandard.co', 'workpointtoday.com', 'amarintv.com', 'nationtv.tv', 'tnnthailand.com', 'springnews.co.th', '77kaoded.com', 'voathai.com', 'xinhuathai.com']
         domain_pattern = "|".join([d.replace('.', r'\.') for d in whitelist])
@@ -372,7 +430,7 @@ def fetch_with_fallback(url: str) -> str:
     # ⚡ ทำงานขนานกันระหว่าง Native Curl และ Jina AI
     def fetch_native():
         try:
-            res = requests.get(url, impersonate="chrome", timeout=8, allow_redirects=True)
+            res = _safe_get(url, impersonate="chrome", timeout=8, allow_redirects=True)
             if res.status_code == 200:
                 if res.encoding is None or res.encoding.lower() == 'iso-8859-1':
                     res.encoding = res.apparent_encoding or 'utf-8'
@@ -386,7 +444,7 @@ def fetch_with_fallback(url: str) -> str:
     def fetch_jina():
         try:
             jina_url = f"https://r.jina.ai/{url}"
-            response = requests.get(jina_url, impersonate="chrome", headers={"Accept": "text/plain", "X-Retain-Images": "none"}, timeout=8)
+            response = _safe_get(jina_url, impersonate="chrome", headers={"Accept": "text/plain", "X-Retain-Images": "none"}, timeout=8)
             if response.status_code == 200:
                 content = _clean_extracted_text(response.text)
                 if len(content.strip()) > 100 and not re.search(anti_bot_patterns, content, re.IGNORECASE): 
@@ -410,9 +468,13 @@ def fetch_with_fallback(url: str) -> str:
 def extract_text_from_url(url: str) -> dict:
     try:
         url = clean_mobile_url(url)
+        if not is_safe_public_url(url):
+            return {"error": "LINK_UNSUPPORTED"}
         url = resolve_facebook_redirects(url) 
         url = expand_url(url)
         url = clean_mobile_url(url) 
+        if not is_safe_public_url(url):
+            return {"error": "LINK_UNSUPPORTED"}
         
         VIDEO_PATTERNS = [
             r'youtube\.com/watch', r'youtu\.be', r'youtube\.com/shorts',
@@ -428,14 +490,15 @@ def extract_text_from_url(url: str) -> dict:
         if re.search(r'(slot|casino|ufa\d+|pgslot|เว็บพนัน)', url.lower()):
             return {"error": "GAMBLING_DETECTED"}
 
-        social_domains = ["facebook.com", "fb.watch", "x.com", "twitter.com", "tiktok.com", "instagram.com"]
-        is_social = any(domain in url.lower() for domain in social_domains)
+        social_domains = ("facebook.com", "fb.watch", "x.com", "twitter.com", "tiktok.com", "instagram.com")
+        is_social = _hostname_matches(url, social_domains)
         
         content = ""
         actual_primary_url = url
         
         if is_social:
             content = extract_social_metadata(url)
+            content = str(content or "").strip()
             if content and re.search(gambling_keywords, content, re.IGNORECASE):
                 return {"error": "GAMBLING_DETECTED"}
                 
@@ -447,6 +510,8 @@ def extract_text_from_url(url: str) -> dict:
                 
             hidden_news_url = force_extract_news_link(url)
             if hidden_news_url:
+                if not is_safe_public_url(hidden_news_url):
+                    return {"error": "LINK_UNSUPPORTED"}
                 actual_primary_url = hidden_news_url
                 actual_news_content = fetch_with_fallback(actual_primary_url)
                 
