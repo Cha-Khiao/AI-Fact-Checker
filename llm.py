@@ -1,147 +1,43 @@
-import requests
 import json
 import os
 import re
 import time
+import logging
 from datetime import datetime
 from dotenv import load_dotenv
 import pytz
 
-from evaluation import apply_evidence_policy, normalize_reference_ids
-from http_client import get_session, split_timeout
+import http_client
+
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-HOST_URL = "https://openrouter.ai"
-API_URL = HOST_URL + "/api/v1/chat/completions"
-
-
-def _bounded_float_env(name: str, default: float, minimum: float, maximum: float) -> float:
-    """Read numeric runtime settings without letting a malformed env break imports."""
-    try:
-        value = float(os.getenv(name, str(default)))
-    except (TypeError, ValueError):
-        value = default
-    return min(maximum, max(minimum, value))
-
-DEFAULT_AI_MODEL = "qwen/qwen3-30b-a3b"
+API_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
-AI_MODEL = os.getenv("AI_MODEL", DEFAULT_AI_MODEL).strip()
-PLANNER_MODEL = os.getenv("PLANNER_MODEL", AI_MODEL).strip()
-ANALYZER_MODEL = os.getenv("ANALYZER_MODEL", AI_MODEL).strip()
-OPENROUTER_PROVIDER_SORT = os.getenv("OPENROUTER_PROVIDER_SORT", "throughput").strip().lower()
-if OPENROUTER_PROVIDER_SORT not in {"price", "throughput", "latency"}:
-    OPENROUTER_PROVIDER_SORT = "throughput"
-PLANNER_PROVIDER_SORT = os.getenv("PLANNER_PROVIDER_SORT", "latency").strip().lower()
-ANALYZER_PROVIDER_SORT = os.getenv(
-    "ANALYZER_PROVIDER_SORT", OPENROUTER_PROVIDER_SORT
-).strip().lower()
-if PLANNER_PROVIDER_SORT not in {"price", "throughput", "latency"}:
-    PLANNER_PROVIDER_SORT = "latency"
-if ANALYZER_PROVIDER_SORT not in {"price", "throughput", "latency"}:
-    ANALYZER_PROVIDER_SORT = "throughput"
-PLANNER_TIMEOUT_SECONDS = _bounded_float_env("PLANNER_TIMEOUT_SECONDS", 12.0, 3.0, 30.0)
-ANALYZER_TIMEOUT_SECONDS = _bounded_float_env("ANALYZER_TIMEOUT_SECONDS", 20.0, 5.0, 45.0)
-ANALYZER_REFERENCE_CHARACTERS = int(
-    _bounded_float_env("ANALYZER_REFERENCE_CHARACTERS", 1200.0, 500.0, 1800.0)
-)
-ANALYZER_TOP_REFERENCE_CHARACTERS = int(
-    _bounded_float_env("ANALYZER_TOP_REFERENCE_CHARACTERS", 2500.0, 1200.0, 3500.0)
-)
+AI_MODEL = os.getenv("AI_MODEL", "").strip()
+LLM_BACKEND = os.getenv("LLM_BACKEND", "openrouter").strip()
 
-PLANNER_RESPONSE_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "action": {"type": "string", "enum": ["SEARCH", "DROP"]},
-        "search_query": {"type": "string"},
-        "locations": {"type": "array", "items": {"type": "string"}},
-        "core_keywords": {"type": "array", "items": {"type": "string"}},
-        "target_year": {"type": "string"},
-        "topic_summary": {"type": "string"},
-    },
-    "required": ["action", "search_query", "locations", "core_keywords", "target_year", "topic_summary"],
-    "additionalProperties": False,
-}
+def _planner_timeout() -> float:
+    try:
+        return float(os.getenv("PLANNER_TIMEOUT_SECONDS", "45"))
+    except ValueError:
+        return 45.0
 
-ANALYSIS_RESPONSE_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "verdict_summary": {"type": "string"},
-        "supported_points": {"type": "array", "items": {"type": "string"}},
-        "conflicting_points": {"type": "array", "items": {"type": "string"}},
-        "comparative_analysis": {"type": "string"},
-        "claim_assessments": {
-            "type": "array",
-            "minItems": 1,
-            "items": {
-                "type": "object",
-                "properties": {
-                    "claim_text": {"type": "string"},
-                    "verdict": {
-                        "type": "string",
-                        "enum": [
-                            "SUPPORTED", "MOSTLY_SUPPORTED", "MIXED",
-                            "MOSTLY_CONTRADICTED", "CONTRADICTED", "INSUFFICIENT_EVIDENCE",
-                        ],
-                    },
-                    "supporting_ref_ids": {
-                        "type": "array", "items": {"type": "integer", "minimum": 1},
-                    },
-                    "conflicting_ref_ids": {
-                        "type": "array", "items": {"type": "integer", "minimum": 1},
-                    },
-                    "explanation": {"type": "string"},
-                },
-                "required": [
-                    "claim_text", "verdict", "supporting_ref_ids",
-                    "conflicting_ref_ids", "explanation",
-                ],
-                "additionalProperties": False,
-            },
-        },
-        "relevant_ref_ids": {"type": "array", "items": {"type": "integer", "minimum": 1}},
-        "verdict": {
-            "type": "string",
-            "enum": [
-                "SUPPORTED", "MOSTLY_SUPPORTED", "MIXED",
-                "MOSTLY_CONTRADICTED", "CONTRADICTED", "INSUFFICIENT_EVIDENCE",
-            ],
-        },
-        "score": {"type": ["integer", "null"], "minimum": 1, "maximum": 5},
-    },
-    "required": [
-        "verdict_summary", "supported_points", "conflicting_points",
-        "comparative_analysis", "claim_assessments", "relevant_ref_ids", "verdict", "score",
-    ],
-    "additionalProperties": False,
-}
+
+def _analyzer_default_timeout() -> float:
+    try:
+        return float(os.getenv("ANALYZER_TIMEOUT_SECONDS", "45"))
+    except ValueError:
+        return 45.0
+
 
 try:
     import streamlit as st
     if "OPENROUTER_API_KEY" in st.secrets: OPENROUTER_API_KEY = st.secrets["OPENROUTER_API_KEY"].strip()
     if "AI_MODEL" in st.secrets: AI_MODEL = st.secrets["AI_MODEL"].strip()
-    if "PLANNER_MODEL" in st.secrets: PLANNER_MODEL = st.secrets["PLANNER_MODEL"].strip()
-    if "ANALYZER_MODEL" in st.secrets: ANALYZER_MODEL = st.secrets["ANALYZER_MODEL"].strip()
+    if "LLM_BACKEND" in st.secrets: LLM_BACKEND = st.secrets["LLM_BACKEND"].strip()
 except Exception: pass
-
-
-def get_runtime_config() -> dict:
-    """Return non-secret runtime settings for diagnostics and reproducibility."""
-    return {
-        "planner_model": PLANNER_MODEL,
-        "analyzer_model": ANALYZER_MODEL,
-        "provider_sort": OPENROUTER_PROVIDER_SORT,
-        "planner_provider_sort": PLANNER_PROVIDER_SORT,
-        "analyzer_provider_sort": ANALYZER_PROVIDER_SORT,
-        "planner_timeout_seconds": PLANNER_TIMEOUT_SECONDS,
-        "analyzer_timeout_seconds": ANALYZER_TIMEOUT_SECONDS,
-        "analyzer_reference_characters": ANALYZER_REFERENCE_CHARACTERS,
-        "analyzer_top_reference_characters": ANALYZER_TOP_REFERENCE_CHARACTERS,
-    }
-
-
-def is_openrouter_configured() -> bool:
-    return bool(OPENROUTER_API_KEY)
 
 def get_current_thai_time():
     tz = pytz.timezone('Asia/Bangkok')
@@ -167,561 +63,564 @@ def parse_json_safely(text: str) -> dict:
         except Exception: pass
     return {}
 
-
-def _find_invalid_reference_ids(values, reference_count):
-    invalid = []
-    if not isinstance(values, list):
-        return invalid
-    for value in values:
-        if not isinstance(value, int) or isinstance(value, bool):
-            invalid.append(value)
-        elif value < 1 or (reference_count is not None and value > reference_count):
-            invalid.append(value)
-    return invalid
-
-
-_VERDICT_TO_SCORE = {
-    "SUPPORTED": 5,
-    "MOSTLY_SUPPORTED": 4,
-    "MIXED": 3,
-    "MOSTLY_CONTRADICTED": 2,
-    "CONTRADICTED": 1,
-    "INSUFFICIENT_EVIDENCE": None,
-}
-
-
-def _reconcile_claim_verdict(claim_verdict, supporting_ids, conflicting_ids):
-    """Ensure a claim label cannot be stronger than its cited evidence IDs."""
-    if supporting_ids and conflicting_ids:
-        return "MIXED"
-    if supporting_ids:
-        if claim_verdict == "MOSTLY_SUPPORTED":
-            return claim_verdict
-        return "SUPPORTED"
-    if conflicting_ids:
-        if claim_verdict == "MOSTLY_CONTRADICTED":
-            return claim_verdict
-        return "CONTRADICTED"
-    return "INSUFFICIENT_EVIDENCE"
-
-
-def _derive_overall_verdict(claims):
-    """Aggregate claim labels deterministically so the summary cannot contradict them."""
-    verdicts = [claim.get("verdict") for claim in claims]
-    evidenced = [value for value in verdicts if value != "INSUFFICIENT_EVIDENCE"]
-    if not evidenced:
-        return "INSUFFICIENT_EVIDENCE"
-    support = any(value in {"SUPPORTED", "MOSTLY_SUPPORTED"} for value in evidenced)
-    conflict = any(value in {"CONTRADICTED", "MOSTLY_CONTRADICTED"} for value in evidenced)
-    if "MIXED" in evidenced or (support and conflict):
-        return "MIXED"
-    incomplete_coverage = len(evidenced) != len(verdicts)
-    if support:
-        if incomplete_coverage or "MOSTLY_SUPPORTED" in evidenced:
-            return "MOSTLY_SUPPORTED"
-        return "SUPPORTED"
-    if incomplete_coverage or "MOSTLY_CONTRADICTED" in evidenced:
-        return "MOSTLY_CONTRADICTED"
-    return "CONTRADICTED"
-
-
-def _request_error_code(error: Exception) -> str:
-    if isinstance(error, requests.Timeout):
-        return "TIMEOUT"
-    if isinstance(error, requests.HTTPError):
-        response = getattr(error, "response", None)
-        status_code = getattr(response, "status_code", None)
-        return f"HTTP_{status_code}" if status_code else "HTTP_ERROR"
-    if isinstance(error, requests.RequestException):
-        return "NETWORK_ERROR"
-    if isinstance(error, (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError)):
-        return "INVALID_RESPONSE"
-    return type(error).__name__
-
-def validate_ai_response(
-    parsed_dict: dict, raw_output: str = "", reference_count=None, references=None
-) -> dict:
-    if references is not None:
-        reference_count = len(references)
+def validate_ai_response(parsed_dict: dict, raw_output: str = "", force_error: bool = False) -> dict:
     template = {
         "verdict_summary": "ไม่สามารถเปรียบเทียบข้อมูลได้",
         "supported_points": ["ไม่พบข้อมูลที่สอดคล้องกับแหล่งอ้างอิง"],
         "conflicting_points": ["ไม่พบข้อมูลที่ขัดแย้ง หรือแหล่งอ้างอิงไม่เพียงพอต่อการเปรียบเทียบ"],
         "comparative_analysis": "ระบบไม่สามารถวิเคราะห์เปรียบเทียบเชิงลึกได้อย่างสมบูรณ์",
-        "claim_assessments": [],
-        "score": None,
-        "verdict": "INSUFFICIENT_EVIDENCE",
-        "evidence_sufficiency": "INSUFFICIENT",
+        "score": 3,
         "relevant_ref_ids": [],
-        "system_status": "OK",
+        "is_error": force_error
     }
-
-    request_meta = parsed_dict.get("_request_meta", {}) if isinstance(parsed_dict, dict) else {}
-    if request_meta and request_meta.get("success") is False:
-        template["system_status"] = "MODEL_ERROR"
-        template["comparative_analysis"] = (
-            "เกิดข้อผิดพลาดในขั้นวิเคราะห์ จึงยังไม่สามารถออกผลตรวจสอบได้"
-        )
-        template["_request_meta"] = request_meta
-        return apply_evidence_policy(template, reference_count or 0, references=references)
-
+    
     if not isinstance(parsed_dict, dict) or not parsed_dict:
-        template["system_status"] = "INVALID_OUTPUT"
         if raw_output:
-            template["comparative_analysis"] = "โครงสร้างผลวิเคราะห์ไม่ถูกต้อง จึงงดออกคำตัดสิน"
-        return apply_evidence_policy(template, reference_count or 0, references=references)
-
-    parsed_dict = dict(parsed_dict)
+            template["comparative_analysis"] = f"❌ โครงสร้างข้อมูลผิดพลาด\n\n[Raw Data]:\n{raw_output[:500]}"
+        template["is_error"] = True
+        return template
+        
     for key in template.keys():
         if key not in parsed_dict or parsed_dict[key] in [None, ""]: parsed_dict[key] = template[key]
             
-    score_str = str(parsed_dict.get("score", ""))
-    numbers = re.findall(r'\d+', score_str)
-    parsed_dict["score"] = max(1, min(5, int(numbers[0]))) if numbers else None
-    raw_relevant_ref_ids = parsed_dict.get("relevant_ref_ids", [])
-    invalid_reference_ids = _find_invalid_reference_ids(
-        raw_relevant_ref_ids, reference_count
-    )
-    parsed_dict["relevant_ref_ids"] = normalize_reference_ids(
-        raw_relevant_ref_ids, reference_count=reference_count
-    )
-
-    normalized_claims = []
-    claim_reference_ids = []
-    conflict_detected = False
-    for claim in parsed_dict.get("claim_assessments", []):
-        if not isinstance(claim, dict) or not str(claim.get("claim_text", "")).strip():
-            continue
-        claim_verdict = str(claim.get("verdict", "INSUFFICIENT_EVIDENCE")).upper()
-        if claim_verdict not in {
-            "SUPPORTED", "MOSTLY_SUPPORTED", "MIXED", "MOSTLY_CONTRADICTED",
-            "CONTRADICTED", "INSUFFICIENT_EVIDENCE",
-        }:
-            claim_verdict = "INSUFFICIENT_EVIDENCE"
-        raw_supporting_ids = claim.get("supporting_ref_ids", [])
-        raw_conflicting_ids = claim.get("conflicting_ref_ids", [])
-        invalid_reference_ids.extend(
-            _find_invalid_reference_ids(raw_supporting_ids, reference_count)
-        )
-        invalid_reference_ids.extend(
-            _find_invalid_reference_ids(raw_conflicting_ids, reference_count)
-        )
-        supporting_ids = normalize_reference_ids(
-            raw_supporting_ids, reference_count=reference_count
-        )
-        conflicting_ids = normalize_reference_ids(
-            raw_conflicting_ids, reference_count=reference_count
-        )
-        for ref_id in supporting_ids + conflicting_ids:
-            if ref_id not in claim_reference_ids:
-                claim_reference_ids.append(ref_id)
-        reconciled_claim_verdict = _reconcile_claim_verdict(
-            claim_verdict, supporting_ids, conflicting_ids
-        )
-        if reconciled_claim_verdict in {"MIXED", "MOSTLY_CONTRADICTED", "CONTRADICTED"}:
-            conflict_detected = True
-        normalized_claims.append({
-            "claim_text": str(claim["claim_text"]).strip(),
-            "verdict": reconciled_claim_verdict,
-            "supporting_ref_ids": supporting_ids,
-            "conflicting_ref_ids": conflicting_ids,
-            "explanation": str(claim.get("explanation", "")).strip(),
-        })
-    parsed_dict["claim_assessments"] = normalized_claims
-    # Evidence must always be traceable to a claim-level support/conflict decision.
-    # Do not preserve broad contextual IDs when claims are absent or malformed.
-    parsed_dict["relevant_ref_ids"] = claim_reference_ids
-
-    validation_checks = dict(parsed_dict.get("validation_checks", {}))
-    validation_checks["claim_reference_ids_in_range"] = True
-    validation_checks["relevant_ids_derived_from_claims"] = True
-    validation_checks["invalid_reference_id_count"] = len(invalid_reference_ids)
-    validation_checks["overall_conflict_guard_applied"] = False
-    validation_checks["overall_verdict_reconciled"] = False
-    derived_verdict = _derive_overall_verdict(normalized_claims)
-    model_verdict = str(parsed_dict.get("verdict", "")).upper().strip()
-    if model_verdict != derived_verdict:
-        parsed_dict["verdict"] = derived_verdict
-        parsed_dict["score"] = _VERDICT_TO_SCORE[derived_verdict]
-        validation_checks["overall_verdict_reconciled"] = True
-    if conflict_detected and model_verdict in {"SUPPORTED", "MOSTLY_SUPPORTED"}:
-        validation_checks["overall_conflict_guard_applied"] = True
-        parsed_dict["verdict_summary"] = (
-            "พบหลักฐานทั้งสนับสนุนและขัดแย้ง จึงไม่สามารถสรุปว่าสนับสนุนทั้งหมดได้"
-        )
-    parsed_dict["validation_checks"] = validation_checks
-    parsed_dict.pop("thought", None)
-
-    if reference_count is not None:
-        return apply_evidence_policy(parsed_dict, reference_count, references=references)
+    try:
+        score_str = str(parsed_dict["score"])
+        numbers = re.findall(r'\d+', score_str)
+        parsed_dict["score"] = max(1, min(5, int(numbers[0]))) if numbers else 3
+    except (ValueError, TypeError, IndexError, KeyError): parsed_dict["score"] = 3
+        
+    try:
+        rel_val = parsed_dict.get("relevant_ref_ids", "")
+        if isinstance(rel_val, list):
+            parsed_dict["relevant_ref_ids"] = [int(x) for x in rel_val if str(x).isdigit() and int(x) != 0]
+        else:
+            numbers = re.findall(r'\d+', str(rel_val))
+            parsed_dict["relevant_ref_ids"] = [int(n) for n in numbers if int(n) != 0]
+    except (ValueError, TypeError, KeyError): parsed_dict["relevant_ref_ids"] = []
+        
     return parsed_dict
 
-def call_openrouter(
-    prompt: str,
-    system_msg: str,
-    model: str = None,
-    timeout: float = 20,
-    max_tokens: int = 700,
-    response_schema: dict = None,
-    schema_name: str = "structured_response",
-    provider_sort: str = None,
-    retry_on_length: bool = True,
-) -> dict:
-    selected_model = model or AI_MODEL
+def call_openrouter(prompt: str, system_msg: str, timeout: float = None, model: str = None, max_tokens: int = None) -> dict:
+    parsed, _meta = _call_openrouter_with_meta(prompt, system_msg, timeout=timeout, model=model, max_tokens=max_tokens)
+    return parsed
+
+
+def _call_openrouter_with_meta(prompt: str, system_msg: str, timeout: float = None, model: str = None, max_tokens: int = None):
+    """Call OpenRouter; return ``(parsed_dict, meta_dict)``.
+
+    ``meta`` carries ``finish_reason``/``truncated`` so callers can retry with a
+    smaller context when the model ran out of tokens instead of finishing.
+    Uses a true wall-clock deadline (``http_client.wall_clock_request``) so a
+    slow generation cannot run past the caller's budget, and caps ``max_tokens``
+    so runaway output cannot make one call "คิดนาน" without bound.
+    """
+    if timeout is None:
+        timeout = _analyzer_default_timeout()
+    if max_tokens is None:
+        try:
+            max_tokens = int(os.getenv("LLM_MAX_TOKENS", "2048"))
+        except ValueError:
+            max_tokens = 2048
     headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
+    provider_sort = os.getenv("OPENROUTER_PROVIDER_SORT", "throughput")
+    target_model = model or AI_MODEL
+    
     payload = {
-        "model": selected_model,
+        "model": target_model,
         "messages": [{"role": "system", "content": system_msg}, {"role": "user", "content": prompt}],
         "temperature": 0.0,
         "max_tokens": max_tokens,
-    }
-    provider_preferences = {}
-    selected_provider_sort = provider_sort or OPENROUTER_PROVIDER_SORT
-    if selected_provider_sort in {"price", "throughput", "latency"}:
-        provider_preferences["sort"] = selected_provider_sort
-    if response_schema:
-        payload["response_format"] = {
-            "type": "json_schema",
-            "json_schema": {"name": schema_name, "strict": True, "schema": response_schema},
+        "provider": {
+            "sort": provider_sort,
+            "allow_fallbacks": True
         }
-        provider_preferences["require_parameters"] = True
-    if provider_preferences:
-        payload["provider"] = provider_preferences
-    started_at = time.perf_counter()
-    base_meta = {
-        "requested_model": selected_model,
-        "served_model": None,
-        "elapsed_seconds": 0.0,
-        "prompt_tokens": None,
-        "completion_tokens": None,
-        "total_tokens": None,
-        "cost": None,
-        "success": False,
-        "error_code": None,
     }
-    if not OPENROUTER_API_KEY:
-        base_meta["error_code"] = "NOT_CONFIGURED"
-        return {"_request_meta": base_meta}
-    try:
-        res = get_session().post(
-            API_URL, headers=headers, json=payload, timeout=split_timeout(timeout)
-        )
-        res.raise_for_status()
-        response_data = res.json()
-        choice = response_data["choices"][0]
-        content = choice["message"]["content"]
-        finish_reason = choice.get("finish_reason")
-        if not isinstance(content, str):
-            raise ValueError("OpenRouter content is not text")
-        parsed = parse_json_safely(content)
-        if not parsed:
-            if finish_reason == "length" and retry_on_length:
-                first_attempt_elapsed = time.perf_counter() - started_at
-                retry_timeout = max(0.0, float(timeout) - first_attempt_elapsed)
-                if retry_timeout < 2.0:
-                    base_meta.update({
-                        "served_model": response_data.get("model", selected_model),
-                        "elapsed_seconds": round(first_attempt_elapsed, 3),
-                        "error_code": "TRUNCATED_OUTPUT",
-                        "finish_reason": finish_reason,
-                        "attempts": 1,
-                        "retry_skipped": "deadline_budget",
-                    })
-                    return {"_request_meta": base_meta}
-                retried = call_openrouter(
-                    prompt,
-                    system_msg,
-                    model=selected_model,
-                    timeout=retry_timeout,
-                    max_tokens=max(1600, int(max_tokens * 1.5)),
-                    response_schema=response_schema,
-                    schema_name=schema_name,
-                    provider_sort=selected_provider_sort,
-                    retry_on_length=False,
-                )
-                retried_meta = dict(retried.get("_request_meta", {}))
-                retried_meta["attempts"] = 2
-                retried_meta["retried_after_finish_reason"] = "length"
-                retried_meta["elapsed_seconds"] = round(
-                    first_attempt_elapsed + float(retried_meta.get("elapsed_seconds") or 0.0),
-                    3,
-                )
-                retried["_request_meta"] = retried_meta
-                return retried
-            base_meta.update({
-                "served_model": response_data.get("model", selected_model),
-                "elapsed_seconds": round(time.perf_counter() - started_at, 3),
-                "error_code": "TRUNCATED_OUTPUT" if finish_reason == "length" else "INVALID_JSON",
+    import time
+    max_retries = 3
+    last_error = None
+    
+    for attempt in range(max_retries):
+        try:
+            res = http_client.wall_clock_request(
+                "POST", API_URL, headers=headers, json=payload,
+                timeout=http_client.split_timeout(timeout),
+            )
+            res.raise_for_status()
+            data = res.json()
+            if "choices" not in data or not data["choices"]:
+                raise ValueError("OpenRouter returned no choices/model available")
+                
+            choice = data["choices"][0]
+            content = choice.get("message", {}).get("content", "")
+            finish_reason = choice.get("finish_reason")
+            content = re.sub(r'<think>[\s\S]*?</think>', '', content).strip()
+            parsed = parse_json_safely(content)
+            return parsed, {
                 "finish_reason": finish_reason,
-                "attempts": 1,
-            })
-            return {"_request_meta": base_meta}
-        usage = response_data.get("usage", {})
-        parsed["_request_meta"] = {
-            "requested_model": selected_model,
-            "served_model": response_data.get("model", selected_model),
-            "elapsed_seconds": round(time.perf_counter() - started_at, 3),
-            "prompt_tokens": usage.get("prompt_tokens"),
-            "completion_tokens": usage.get("completion_tokens"),
-            "total_tokens": usage.get("total_tokens"),
-            "cost": usage.get("cost"),
-            "success": True,
-            "error_code": None,
-            "finish_reason": finish_reason,
-            "attempts": 1,
-        }
-        return parsed
-    except Exception as error:
-        base_meta["elapsed_seconds"] = round(time.perf_counter() - started_at, 3)
-        base_meta["error_code"] = _request_error_code(error)
-        return {"_request_meta": base_meta}
+                "content_length": len(content or ""),
+                "truncated": (finish_reason in ("length", "max_tokens")) or not parsed,
+            }
+        except Exception as e:
+            last_error = e
+            err_str = str(e)
+            logger.error(f"OpenRouter API Error (Attempt {attempt+1}/{max_retries}): {e}")
+            
+            # If it's a payment error, don't retry
+            if "402" in err_str or "Payment Required" in err_str:
+                return {}, {"error": err_str, "truncated": False, "payment_required": True}
+            
+            # Exponential backoff for 502, 504, 429 or Timeout
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)  # 1s, 2s
+                
+    err_str = str(last_error)
+    return {}, {"error": err_str, "truncated": False, "payment_required": False}
+
+# =========================================================
+THAI_MONTHS_MAP = {
+    'ม.ค.': 1, 'มกราคม': 1, 'ก.พ.': 2, 'กุมภาพันธ์': 2, 'มี.ค.': 3, 'มีนาคม': 3,
+    'เม.ย.': 4, 'เมษายน': 4, 'พ.ค.': 5, 'พฤษภาคม': 5, 'มิ.ย.': 6, 'มิถุนายน': 6,
+    'ก.ค.': 7, 'กรกฎาคม': 7, 'ส.ค.': 8, 'สิงหาคม': 8, 'ก.ย.': 9, 'กันยายน': 9,
+    'ต.ค.': 10, 'ตุลาคม': 10, 'พ.ย.': 11, 'พฤศจิกายน': 11, 'ธ.ค.': 12, 'ธันวาคม': 12
+}
+
+def parse_relative_or_explicit_date(text: str) -> tuple:
+    """Parse relative timestamps or explicit dates from Thai news text.
+    
+    Returns (iso_date_str, display_thai_str, is_fresh_news)
+    """
+    from datetime import datetime, timedelta
+    import pytz
+    tz = pytz.timezone('Asia/Bangkok')
+    now = datetime.now(tz)
+    text_clean = str(text or "").strip()
+    if not text_clean:
+        return None, "ไม่ระบุในข้อความ", False
+
+    # 1. Thai explicit date (e.g. "25 มิถุนายน 2569", "25 มิ.ย. 69", "25 June 2026") - CHECK FIRST!
+    thai_date_match = re.search(r'(\d{1,2})\s*(ม\.ค\.|มกราคม|ก\.พ\.|กุมภาพันธ์|มี\.ค\.|มีนาคม|เม\.ย\.|เมษายน|พ\.ค\.|พฤษภาคม|มิ\.ย\.|มิถุนายน|ก\.ค\.|กรกฎาคม|ส\.ค\.|สิงหาคม|ก\.ย\.|กันยายน|ต\.ค\.|ตุลาคม|พ\.ย\.|พฤศจิกายน|ธ\.ค\.|ธันวาคม)\s*(\d{2,4})', text_clean)
+    if thai_date_match:
+        day = int(thai_date_match.group(1))
+        month_str = thai_date_match.group(2)
+        year_raw = int(thai_date_match.group(3))
+        month = THAI_MONTHS_MAP.get(month_str, 1)
+        if year_raw < 100:
+            year = year_raw + 2500 - 543
+        elif year_raw > 2400:
+            year = year_raw - 543
+        else:
+            year = year_raw
+        try:
+            dt = datetime(year, month, day)
+            delta_days = (now.date() - dt.date()).days
+            is_fresh = delta_days <= 1
+            return dt.strftime("%Y-%m-%d"), f"{day} {month_str} {year+543}", is_fresh
+        except Exception:
+            pass
+
+    # 2. Specific Relative Time (e.g. "5 นาทีที่แล้ว", "2 ชั่วโมงก่อน", "3 วันที่แล้ว")
+    rel_match = re.search(r'(\d+)\s*(วินาที|นาที|ชั่วโมง|ชม\.|วัน|สัปดาห์|เดือน|ปี)\s*(ที่แล้ว|ก่อน)', text_clean, re.IGNORECASE)
+    if rel_match:
+        val = int(rel_match.group(1))
+        unit = rel_match.group(2)
+        if 'วินาที' in unit or 'นาที' in unit or 'ชั่วโมง' in unit or 'ชม.' in unit:
+            dt = now - timedelta(hours=val if ('ชั่วโมง' in unit or 'ชม.' in unit) else 0)
+            return dt.strftime("%Y-%m-%d"), f"{val} {unit}ที่แล้ว", True
+        elif 'วัน' in unit:
+            dt = now - timedelta(days=val)
+            return dt.strftime("%Y-%m-%d"), f"{val} วันก่อน", val <= 1
+        elif 'สัปดาห์' in unit:
+            dt = now - timedelta(weeks=val)
+            return dt.strftime("%Y-%m-%d"), f"{val} สัปดาห์ก่อน", False
+
+    # 3. Relative "เมื่อวาน" or explicit post marker for "วันนี้"
+    if re.search(r'เมื่อวาน(นี้)?', text_clean):
+        dt = now - timedelta(days=1)
+        return dt.strftime("%Y-%m-%d"), "เมื่อวานนี้", True
+
+    if re.search(r'(โพสต์เมื่อ|เผยแพร่|อัปเดต)\s*:\s*วันนี้', text_clean):
+        return now.strftime("%Y-%m-%d"), "วันนี้", True
+
+    return None, "ไม่ระบุในข้อความ", False
 
 # =========================================================
 # ⚡ STEP 1: Search Planner (บังคับสร้างคีย์เวิร์ดราชการ + แบนภาษาอื่น)
 # =========================================================
-def analyze_intent_and_plan_search_with_diagnostics(
-    news_text: str, model: str = None, timeout_seconds: float = None
-) -> dict:
-    """Plan retrieval and expose whether the model or deterministic fallback was used."""
+def analyze_intent_and_plan_search(news_text: str, timeout: float = None) -> tuple:
     text_for_analysis = news_text
     if "]:\n" in news_text: 
         text_for_analysis = news_text.split("]:\n")[-1] 
         
     text_chunk = sanitize_for_api(text_for_analysis[:1500])
+    tz = pytz.timezone('Asia/Bangkok')
+    current_year_th = datetime.now(tz).year + 543
+    if timeout is None:
+        timeout = _planner_timeout()
     
+    current_date_str = datetime.now(tz).strftime("วันที่ %d %B พ.ศ. %Y เวลา %H:%M น.")
+    det_iso, det_display, is_fresh = parse_relative_or_explicit_date(text_chunk)
+    post_time_hint = f"ตรวจพบเวลาของโพสต์/ข่าวในข้อความ: {det_display}" if det_display else "เวลาของโพสต์/ข่าว: ไม่ได้ระบุวันที่ชัดเจน (ให้วิเคราะห์จากบริบท)"
+
     prompt = f"""ข้อความที่ต้องการตรวจสอบ: 
 "{text_chunk}"
 
-หน้าที่: สกัด "ข้อมูลสำหรับค้นหา" (Optimized for Search Engine)
-กฎ:
-1. `search_query`: สร้างกลุ่มคำสั้นๆ สำหรับสืบค้น (ห้ามแต่งเป็นประโยคยาว ห้ามใส่เลขปี)
-2. `locations`: สกัด "สถานที่" (ชื่อจังหวัด, อำเภอ) 
-3. `core_keywords`: ⚠️ สำคัญมาก! ให้ดึงแก่นเรื่อง และ **"แปลเป็นคำพ้องความหมายที่เป็นภาษาราชการ/ทางการ"** แนบมาด้วยเสมอ (เช่น ถ้าเจอคำว่า "สายไฟลงดิน" ให้ใส่ "สายไฟฟ้าใต้ดิน" หรือ "ระบบจำหน่ายไฟฟ้า" มาด้วย, ถ้าเจอ "แจกเงิน" ให้ใส่ "มาตรการกระตุ้นเศรษฐกิจ") รวม 3-5 คำ เพื่อให้ระบบหาเว็บหน่วยงานรัฐ (go.th) เจอ!
-4. `target_year`: สกัด "ปี พ.ศ." (ตัวเลข 4 หลัก) ถ้าข้อความไม่ได้ระบุปีให้คืนสตริงว่าง ห้ามเดาปีปัจจุบัน เพราะอาจทำให้ระบบตัดข่าวเก่าที่เกี่ยวข้องทิ้ง
-5. หากข้อความไม่มีเนื้อหาสาระ ให้ action = "DROP"
+บริบทเวลา:
+- [เวลาระบบปัจจุบัน]: {current_date_str}
+- [เวลาเผยแพร่ของข่าว/โพสต์]: {post_time_hint}
 
-⚠️ คำเตือนขั้นเด็ดขาด: ห้ามสร้างข้อความภาษาจีน (Chinese) หรือภาษาอื่นที่ไม่ใช่ภาษาไทยเด็ดขาด! ตอบกลับเป็นภาษาไทยและอังกฤษตามความจำเป็นเท่านั้น!
+หน้าที่: จำแนกประเภทเนื้อหา และสกัด "ข้อมูลสำหรับค้นหา" (Optimized for Search Engine)
+
+ขั้นตอนที่ 1 — จำแนกประเภทเนื้อหา (content_type):
+- "PERSONAL_STORY": เรื่องราวส่วนตัว/ประสบการณ์/เรื่องเล่า ที่ไม่เกี่ยวกับนโยบายรัฐหรือข่าวสาธารณะ
+- "NEWS_CLAIM": ข่าว/ข้อกล่าวอ้าง/เหตุการณ์สาธารณะ/นโยบายที่มีคนแชร์ต่อ
+- "POLICY_ANNOUNCEMENT": ประกาศนโยบาย/มาตรการของหน่วยงานรัฐอย่างเป็นทางการ
+- "GENERAL": ประเภทอื่น ๆ
+
+ขั้นตอนที่ 2 — สกัดข้อมูลค้นหา ตามกฎห้ามสมมติ (สำคัญมาก!):
+⚠️ ห้ามเพิ่มคำที่ "ไม่มีอยู่ในข้อความ" เป็นอันขาด!
+
+⚠️ **คำแนะนำสำคัญเพื่อให้ค้นหาพบแหล่งอ้างอิงตรงประเด็น 100%:**
+1. `topic_keywords`: สกัด "กลุ่มคำที่เป็นแก่นของข่าว" (Headline Keyword Cluster) ที่คาดว่าสำนักข่าวทุกสำนักจะต้องใช้พาดหัว (เช่น "อิงฟ้า แฟนคลับให้เงิน 350 บาท", "อนุทิน สั่งเด้งอธิบดี เสียหาย 4.5 พันล้าน")
+2. `core_entities`: สกัดคำนามสำคัญ ตัวเลข สถานที่ ชื่อคน หรือสิ่งของ (เช่น ["อนุทิน", "เด้งอธิบดี", "4.5 พันล้าน"]) เพื่อใช้บังคับให้หน้าเว็บต้องมีคำเหล่านี้
+3. `exact_quote`: คัดลอกประโยคเด็ด หรือใจความสำคัญที่สุดจากข้อความต้นฉบับมาตรงๆ (ห้ามดัดแปลง) เพื่อใช้ค้นหาแบบ Exact Match
+4. `publish_date_context`: เวลาที่โพสต์หรือเผยแพร่ข่าว (หากในข้อความมีระบุ เช่น "25 มิถุนายน 2569", "2 ชั่วโมงที่แล้ว" ให้ใช้ค่านั้น ห้ามเอาเวลาระบบปัจจุบันมาใส่แทนเด็ดขาด)
+5. `content_timeline`: โครงสร้าง 5W1H (ใคร ทำอะไร ที่ไหน เมื่อไหร่ ผลเป็นอย่างไร) ของเหตุการณ์ในข่าว แยกออกจากเวลาที่โพสต์
 
 ตอบกลับเป็น JSON รูปแบบนี้เท่านั้น:
 {{
-    "action": "SEARCH หรือ DROP",
-    "search_query": "กลุ่มคำสั้นๆ",
-    "locations": ["จังหวัด"],
-    "core_keywords": ["คำพูดทั่วไป", "คำศัพท์ราชการ/ทางการ"],
-    "target_year": "2569",
+    "action": "SEARCH",
+    "content_type": "PERSONAL_STORY หรือ NEWS_CLAIM หรือ POLICY_ANNOUNCEMENT หรือ GENERAL",
+    "topic_keywords": "กลุ่มคำพาดหัวข่าว/แก่นเรื่องหลัก",
+    "exact_quote": "ประโยคที่คัดลอกมาจากต้นฉบับเป๊ะๆ",
+    "core_entities": ["คำนามสำคัญ", "ตัวเลข", "สถานที่", "ชื่อคน", "กริยาหลัก"],
+    "locations": ["จังหวัด", "สถานที่"],
+    "publish_date_context": "เวลาของโพสต์หรือข่าวต้นฉบับ",
+    "content_timeline": "เหตุการณ์เกิดขึ้นเมื่อไหร่ ใครทำอะไร",
     "topic_summary": "สรุปประเด็นหลัก 1 ประโยค"
 }}"""
+    try:
+        planner_max_tokens = int(os.getenv("PLANNER_MAX_TOKENS", "300"))
+    except ValueError:
+        planner_max_tokens = 300
+
     res_data = call_openrouter(
         prompt,
-        "Extract SEO keywords including formal official synonyms for gov sites. STRICTLY THAI LANGUAGE ONLY. NO CHINESE ALLOWED. Output strictly in JSON format.",
-        model=model or PLANNER_MODEL,
-        timeout=min(PLANNER_TIMEOUT_SECONDS, timeout_seconds) if timeout_seconds else PLANNER_TIMEOUT_SECONDS,
-        max_tokens=350,
-        response_schema=PLANNER_RESPONSE_SCHEMA,
-        schema_name="search_plan",
-        provider_sort=PLANNER_PROVIDER_SORT,
+        "Classify content type (PERSONAL_STORY/NEWS_CLAIM/POLICY_ANNOUNCEMENT/GENERAL) and extract exact quotes and entities. NEVER invent keywords absent from the text. STRICTLY THAI LANGUAGE ONLY. NO CHINESE ALLOWED. Output strictly in JSON format.",
+        timeout=timeout,
+        model=AI_MODEL,
+        max_tokens=planner_max_tokens,
     )
+    return _normalize_planner_response(res_data, text_chunk, current_year_th)
 
-    request_meta = dict(res_data.get("_request_meta", {}))
-    fallback_used = request_meta.get("success") is False
-    if fallback_used:
-        fallback_query = re.sub(r'https?://\S+', ' ', text_chunk)
-        fallback_query = re.sub(r'[^0-9A-Za-zก-๙\s]', ' ', fallback_query)
-        fallback_query = re.sub(r'\s+', ' ', fallback_query).strip()[:160]
-        try:
-            from search import _meaningful_terms
 
-            fallback_keywords = [
-                term for term in _meaningful_terms(fallback_query)
-                if len(term) >= 3 and not term.isdigit()
-            ][:5]
-        except (ImportError, RuntimeError):
-            fallback_keywords = []
-        res_data = {
-            "action": "SEARCH" if len(fallback_query) >= 5 else "DROP",
-            "search_query": fallback_query,
-            "locations": [],
-            "core_keywords": fallback_keywords,
-            "target_year": "",
-            "topic_summary": "ใช้ข้อความต้นฉบับค้นหาโดยตรง เนื่องจากขั้นวางแผนไม่สำเร็จ",
-            "_request_meta": request_meta,
-        }
+# =========================================================
+# 🧹 Keyword sanitize & validate (Task 6 — กัน hallucinate keyword)
+# =========================================================
+_PLATFORM_WORDS = {
+    'facebook', 'fb', 'instagram', 'ig', 'tiktok', 'twitter', 'x', 'youtube',
+    'line', 'threads', 't.me', 'telegram', 'wechat', 'snapchat', 'pinterest',
+    'reddit', 'blockdit', 'pantip', 'quora', 'viber', 'whatsapp',
+    'เฟซบุ๊ก', 'เฟสบุ๊ก', 'เฟสบุค', 'อินสตาแกรม', 'ติ๊กต็อก', 'ติ๊กต๊อก',
+    'ทวิตเตอร์', 'ยูทูป', 'ไลน์', 'วิดีโอ', 'คลิป', 'แชท', 'แฮชแท็ก',
+}
 
-    action = str(res_data.get("action", "SEARCH")).upper()
+_NOISE_WORDS = {
+    'ข่าว', 'ข่าวล่าสุด', 'ล่าสุด', 'วันนี้', 'ด่วน', 'ร้อนแรง', 'ไวรัล',
+    'viral', 'โพสต์', 'แคปชั่น', 'caption', 'แชร์', 'แชร์ต่อ', 'status',
+    'คลิป', 'รูป', 'ภาพ', 'เรื่อง', 'ประเด็น', 'ตรวจสอบ', 'จริงไหม',
+    'จริงหรือ', 'ความจริง', 'ชัดเจน', 'น่ารัก', 'สุดยอด', 'รายงาน',
+}
+
+# คำสามัญที่ขึ้นหัวข่าวหลากเรื่องมากเกินไป (ข่าวฆาตกรรม/บันเทิง/อาชญากรรม)
+# → ถ้าเป็นคีย์เวิร์ด/title hit จะปล่อยขยะผ่าน gate (เช่น "เพื่อนรัก" ปรากฏ
+# ในหัวข่าว "เพื่อนรักหักเหลี่ยมโหด", "เพื่อนรักทวงเงินไม่คืน" ที่ไม่เกี่ยวกับเรื่องนี้)
+_GENERIC_WORDS = {
+    'เพื่อนรัก', 'เพื่อน', 'แฟน', 'เมีย', 'ผัว', 'สามี', 'ภรรยา', 'หนุ่ม',
+    'สาว', 'รัก', 'เงิน', 'ลูก', 'ครอบครัว', 'คนรัก', 'แฟนเก่า', 'แม่',
+    'พ่อ', 'น้อง', 'พี่', 'ลุง', 'ป้า', 'ตา', 'ยาย',
+}
+
+
+def _sanitize_keywords(keywords: list) -> list:
+    """Remove platform words, noise words, and junk from a keyword list.
+
+    ก่อนหน้านี้ลบแค่จาก search_query — ตอนนี้ลบจาก core_keywords ด้วย
+    (กันคำว่า "Facebook" เข้ามาในคีย์เวิร์ดค้นหา)
+    """
+    cleaned = []
+    seen = set()
+    for kw in keywords:
+        k = str(kw or "").strip()
+        k = re.sub(r'^[\s\'"“”()\[\]|#]+|[\s\'"“”()\[\]|#]+$', '', k)
+        if not k:
+            continue
+        k_lower = k.lower()
+        if k_lower in _PLATFORM_WORDS or k_lower in _NOISE_WORDS or k_lower in _GENERIC_WORDS:
+            continue
+        # ห้าม keyword ที่ยาวเกินไป (เป็นประโยค ไม่ใช่คำ)
+        if len(k) > 30:
+            continue
+        if k_lower in seen:
+            continue
+        seen.add(k_lower)
+        cleaned.append(k)
+    return cleaned
+
+
+def _validate_keywords_against_text(keywords: list, text: str) -> list:
+    """Keep only keywords that actually appear in the source text.
+
+    กัน hallucinate: ถ้าโมเดลสร้างคำที่ไม่มีในข้อความ (เช่น "เงินดิจิทัล"
+    ในเรื่องส่วนตัว) → ตัดทิ้ง ไม่งั้น search จะไปคนละประเด็น
+    """
+    if not text:
+        return keywords
+    text_lower = text.lower()
+    valid = []
+    for kw in keywords:
+        kw_lower = kw.lower().strip()
+        if not kw_lower:
+            continue
+        if kw_lower in text_lower:
+            valid.append(kw)
+    return valid
+
+
+def _extract_numeric_keywords(text: str) -> list:
+    """Extract number+unit patterns (เช่น "350 บาท") from text — มักเป็นหลักฐานสำคัญ."""
+    nums = re.findall(r'(\d[\d,]*\s*(?:บาท|%|ปี|วัน|เดือน|ล้าน|พัน|หมื่น|แสน|ครั้ง|คน|ราย|จุด|ดอลลาร์|เหรียญ|ล้านบาท))', text, re.IGNORECASE)
+    return [n.strip() for n in dict.fromkeys(nums)]
+
+
+def _fallback_keywords(text: str, current_keywords: list, exact_quote: str = "") -> list:
+    """Fallback keyword extraction when planner fails or returns too few."""
+    result = list(current_keywords)
+    seen = {k.lower() for k in result}
     
-    raw_query = res_data.get("search_query", text_chunk[:80])
-    if isinstance(raw_query, list):
-        raw_query = " ".join([str(q) for q in raw_query])
-    raw_query = str(raw_query)
+    # ถ้ามี exact_quote ที่ยาวพอ ใช้คำจาก exact_quote เป็นหลักดีกว่า เพราะตรงตามข้อความจริง
+    if exact_quote and len(exact_quote) > 10:
+        text_clean = re.sub(r'https?://\S+', ' ', exact_quote)
+    else:
+        text_clean = re.sub(r'https?://\S+', ' ', text)
+
+    for num in _extract_numeric_keywords(text_clean):
+        if num.lower() not in seen:
+            result.append(num)
+            seen.add(num.lower())
+            
+    noise_set = _PLATFORM_WORDS | _NOISE_WORDS | _GENERIC_WORDS
     
-    clean_query = re.sub(r'(?i)(facebook|fb|twitter|x|tiktok|youtube|ข่าวล่าสุด|รัฐบาลไทย|\||\.\.\.)', '', raw_query).strip()
+    # 2) regex: Thai words 4-30 chars (no spaces)
+    if len(result) < 8:
+        thai_re = re.compile(r'[\u0E00-\u0E7F]{4,30}')
+        for m in thai_re.findall(text_clean):
+            if m.lower() in seen or m.lower() in noise_set:
+                continue
+            result.append(m)
+            seen.add(m.lower())
+            if len(result) >= 8:
+                break
+    return result[:10]
+
+
+def _normalize_planner_response(res_data: dict, text_chunk: str, current_year_th: str) -> dict:
+    """Normalize planner LLM JSON into a standard dict."""
+    action = "SEARCH"
+    content_type = str(res_data.get("content_type", "NEWS_CLAIM")).upper().strip()
+    if content_type not in ("PERSONAL_STORY", "NEWS_CLAIM", "POLICY_ANNOUNCEMENT", "GENERAL"):
+        content_type = "NEWS_CLAIM"
+    
+    topic_keywords = res_data.get("topic_keywords", "")
+    if isinstance(topic_keywords, list):
+        topic_keywords = " ".join([str(q) for q in topic_keywords])
+    topic_keywords = str(topic_keywords)
+    
+    exact_quote = res_data.get("exact_quote", "")
+    if not exact_quote.strip() or len(exact_quote) < 5:
+        exact_quote = text_chunk[:100].replace('\n', ' ')
+
+    if not topic_keywords.strip() or len(topic_keywords.split()) > 15:
+        topic_keywords = exact_quote[:60]
+    
+    clean_query = re.sub(r'(?i)(facebook|fb|twitter|\bx\b|x\.com|tiktok|youtube|ข่าวล่าสุด|รัฐบาลไทย|\||\.\.\.)', '', topic_keywords).strip()
     
     locations = res_data.get("locations", [])
     if isinstance(locations, str): locations = [locations]
+    locations = [str(l).strip() for l in locations if str(l).strip()]
     
-    core_keywords = res_data.get("core_keywords", [])
-    if isinstance(core_keywords, str): core_keywords = [core_keywords]
-        
-    target_year = str(res_data.get("target_year", "")).strip()
+    core_entities = res_data.get("core_entities", res_data.get("core_keywords", []))
+    if isinstance(core_entities, str): core_entities = [core_entities]
+    core_entities = [k.replace('"', '').replace("'", "").strip() for k in core_entities if k.strip()]
+    core_entities = _sanitize_keywords(core_entities)
+    core_entities = _validate_keywords_against_text(core_entities, text_chunk)
+    if len(core_entities) < 2:
+        core_entities = _fallback_keywords(text_chunk, core_entities, exact_quote)
+    
+    content_timeline = str(res_data.get("content_timeline", res_data.get("timeline", "ไม่ระบุ"))).strip()
+    publish_date_context = str(res_data.get("publish_date_context", "ไม่ระบุ")).strip()
     topic_summary = str(res_data.get("topic_summary", "เปรียบเทียบและวิเคราะห์เนื้อหา")).strip()
-
-    if action == "DROP":
-        return {
-            "status": "DROP",
-            "completed": not fallback_used,
-            "fallback_used": fallback_used,
-            "action": "DROP",
-            "search_query": "",
-            "topic_summary": res_data.get("reason", "ไม่ใช่เนื้อหาที่สามารถเปรียบเทียบได้"),
-            "locations": [],
-            "core_keywords": [],
-            "target_year": "",
-            "request_meta": request_meta,
-        }
+    
+    # 🕒 Deterministic date resolution (แยกเวลาระบบออกจากเวลาข่าวจริง)
+    det_iso, det_display, is_fresh = parse_relative_or_explicit_date(text_chunk)
+    if det_display and (publish_date_context in ["ไม่ระบุ", ""] or "วันนี้" in publish_date_context):
+        publish_date_context = det_display
+    
     return {
-        "status": "DEGRADED" if fallback_used else "OK",
-        "completed": True,
-        "fallback_used": fallback_used,
-        "action": "SEARCH",
+        "action": action,
         "search_query": clean_query,
+        "topic_keywords": clean_query,
         "topic_summary": topic_summary,
         "locations": locations,
-        "core_keywords": core_keywords,
-        "target_year": target_year,
-        "request_meta": request_meta,
+        "core_keywords": core_entities,
+        "timeline": content_timeline,
+        "content_timeline": content_timeline,
+        "publish_date_context": publish_date_context,
+        "content_type": content_type,
+        "core_keywords_formal": [],
+        "exact_quote": exact_quote,
+        "is_fresh_news": is_fresh
     }
-
-
-def analyze_intent_and_plan_search(news_text: str, model: str = None) -> tuple:
-    """Backward-compatible tuple contract used by the current Streamlit UI."""
-    report = analyze_intent_and_plan_search_with_diagnostics(news_text, model=model)
-    return (
-        report["action"], report["search_query"], report["topic_summary"],
-        report["locations"], report["core_keywords"], report["target_year"],
-    )
 
 # =========================================================
 # ⚖️ STEP 2: The Analyzer (กฎเหล็กแบนภาษาจีน)
 # =========================================================
-def analyze_news_with_qwen(
-    news_text: str,
-    references: list,
-    current_date: str,
-    source_url: str = "",
-    model: str = None,
-    timeout_seconds: float = None,
-) -> dict:
-    if not references:
-        return validate_ai_response(
-            {
-                "verdict_summary": "ยังไม่พบแหล่งอ้างอิงที่เกี่ยวข้องเพียงพอ",
-                "supported_points": [],
-                "conflicting_points": [],
-                "comparative_analysis": "ระบบงดเรียกโมเดลตัดสินเมื่อไม่มีหลักฐานจากการค้นหา",
-                "claim_assessments": [],
-                "relevant_ref_ids": [],
-                "verdict": "INSUFFICIENT_EVIDENCE",
-                "score": None,
-                "system_status": "NO_EVIDENCE",
-                "_request_meta": {
-                    "requested_model": model or ANALYZER_MODEL,
-                    "served_model": None,
-                    "elapsed_seconds": 0.0,
-                    "prompt_tokens": 0,
-                    "completion_tokens": 0,
-                    "total_tokens": 0,
-                    "cost": 0,
-                    "success": True,
-                    "error_code": None,
-                    "skipped": True,
-                },
-            },
-            references=[],
-        )
-    clean_claim = sanitize_for_api(news_text[:2000])
-    ref_text = "\n\n".join([
-        f"[อ้างอิง {i+1}]: {r['title']} | วันที่: {r.get('pub_date', 'ไม่ระบุ')}\n"
-        f"ระดับแหล่งข้อมูล: {r.get('source_tier', 'ไม่ระบุ')} — {r.get('source_tier_label', 'ยังไม่ได้จัดประเภท')} | "
-        f"โดเมน: {r.get('source_domain', 'ไม่ระบุ')}\n"
-        f"เนื้อหา: {str(r.get('snippet', ''))[:(ANALYZER_TOP_REFERENCE_CHARACTERS if i < 3 else ANALYZER_REFERENCE_CHARACTERS)]}"
-        for i, r in enumerate(references)
-    ]) if references else "ไม่มีอ้างอิง"
-    
-    is_official_source = bool(source_url and (".go.th" in source_url.lower() or ".gov" in source_url.lower() or 'antifakenewscenter.com' in source_url.lower()))
-    origin_info = f"ดึงมาจากเว็บไซต์ทางการ (Official Source): {source_url}" if is_official_source else "ข้อความทั่วไป / โซเชียลมีเดีย"
-    current_time_context = str(current_date or "").strip() or get_current_thai_time()
+def _build_analyzer_ref_text(references: list, max_refs: int = 10, max_chars: int = 1000) -> str:
+    """Build the compact reference block for the analyzer prompt.
 
-    prompt = f"""คุณคือ AI ผู้เชี่ยวชาญด้านการวิเคราะห์และเปรียบเทียบเนื้อหาข่าว (Comparative Analyst)
+    Slices each snippet to ``max_chars`` so the model context stays small — the
+    dominant cost of the analyzer call is the 15K-char context it used to send.
+    """
+    if not references:
+        return "ไม่มีอ้างอิง"
+    parts = []
+    for i, r in enumerate(references[:max_refs]):
+        snippet = str(r.get("snippet", "") or "")
+        if len(snippet) > max_chars:
+            snippet = snippet[:max_chars]
+        parts.append(
+            f"[อ้างอิง {i+1}]: {r.get('title', '')} | วันที่: {r.get('pub_date', 'ไม่ระบุ')}\nเนื้อหา: {snippet}"
+        )
+    return "\n\n".join(parts)
+
+
+def _build_analyzer_prompt(clean_claim: str, origin_info: str, ref_text: str, current_time_context: str, content_type: str = "NEWS_CLAIM", content_timeline: str = "ไม่ระบุ", publish_date_context: str = "ไม่ระบุ"):
+    system_msg = "You are an Elite Fact-Checking Comparative Analyst. STRICTLY THAI LANGUAGE ONLY. DO NOT OUTPUT CHINESE CHARACTERS. Output strictly valid JSON in THAI. Be highly objective, evidence-based, and rigorous."
+    content_type_label = {
+        "PERSONAL_STORY": "เรื่องราวส่วนตัว / ประสบการณ์ / โซเชียลไวรัล",
+        "NEWS_CLAIM": "ข่าว / ข้อกล่าวอ้างเหตุการณ์สาธารณะ",
+        "POLICY_ANNOUNCEMENT": "ประกาศนโยบาย / มาตรการของหน่วยงานรัฐ",
+        "GENERAL": "เรื่องทั่วไป",
+    }.get(content_type, "เรื่องทั่วไป")
+    prompt = f"""คุณคือ AI ผู้เชี่ยวชาญด้านการตรวจสอบและประเมินความสอดคล้องของข้อเท็จจริง (Fact-Checking & Truth Verification Analyst)
 
 เวลาปัจจุบัน: {current_time_context}
-[ข้อความต้นฉบับ]: "{clean_claim}"
+[ประเภทเนื้อหาที่ตรวจสอบ]: {content_type_label}
+[ข้อความที่ต้องการตรวจสอบ]: "{clean_claim}"
 [แหล่งที่มา]: {origin_info}
+[ไทม์ไลน์โพสต์]: {publish_date_context}
+[ไทม์ไลน์เนื้อหา (5W1H)]: {content_timeline}
 
-[แหล่งข้อมูลอ้างอิงที่ระบบคัดกรองมาให้]:
+[แหล่งข้อมูลอ้างอิงจากสื่อหลักและหน่วยงานทางการ]:
 {ref_text}
 
-กระบวนการเปรียบเทียบเนื้อหา:
-1. แยกข้อความต้นฉบับเป็นข้อกล่าวอ้างย่อยที่ตรวจสอบได้ แล้วประเมินแต่ละข้อใน claim_assessments
-2. ตรวจ subject + predicate/action + quantity/measurement + place + time ของแต่ละแหล่ง แค่มีคำนามหรือสถานที่เดียวกันยังไม่ถือว่าเกี่ยวข้อง
-3. supporting_ref_ids/conflicting_ref_ids ใส่เฉพาะแหล่งที่มีข้อความยืนยันหรือหักล้างข้อกล่าวอ้างนั้นโดยตรง ห้ามใช้บทความที่พูดคนละตัวชี้วัด เช่น “จำนวนประชากร” เป็นหลักฐานของ “จำนวนจังหวัด”
-4. ตรวจทุกแหล่งอย่างเป็นธรรม ห้ามเลือกเฉพาะหลักฐานที่สนับสนุนข้อสรุป แต่แหล่งบริบทกว้างๆ ที่ไม่ยืนยัน/หักล้างโดยตรงต้องไม่ใส่ ID
-5. relevant_ref_ids ต้องเท่ากับผลรวมของ supporting_ref_ids และ conflicting_ref_ids จาก claim_assessments เท่านั้น
-6. หากมีหลักฐานขัดแย้งอย่างมีสาระ ห้ามให้ผลรวมเป็น SUPPORTED
-7. เมื่อมีหลายสำนักข่าวหรือหน่วยงานที่ยืนยัน/หักล้างข้อกล่าวอ้างเดียวกันโดยตรง ให้ใช้อ้างอิงจากผู้เผยแพร่อิสระ 3-5 แหล่ง แต่ห้ามเติมแหล่งที่เพียงกล่าวถึงหัวข้อหรือไม่ตอบข้อกล่าวอ้างเพื่อให้ครบจำนวน
-7. หากต้นฉบับพูดกว้างๆ แต่อ้างอิงให้รายละเอียดที่ไม่เปลี่ยนสาระหลัก ไม่ถือว่าเป็นความขัดแย้ง
-8. ให้พิจารณาว่าแหล่งข้อมูลเป็นหน่วยงานปฐมภูมิที่รับผิดชอบเรื่องนั้นโดยตรงหรือไม่ ห้ามถือว่าเว็บไซต์รัฐบาลน่าเชื่อถือสูงสุดในทุกหัวข้อโดยอัตโนมัติ
+⭐ **ระเบียบวิธีประเมินระดับความสอดคล้องและความถูกต้อง (Truth & Consistency Rubric):**
+
+1. 🎯 **เปรียบเทียบ "สิ่งที่ข้อความต้นฉบับกล่าวอ้าง" กับ "ข้อเท็จจริงในแหล่งอ้างอิง":**
+   - **สอดคล้อง (Supported):** แหล่งอ้างอิงยืนยันว่าสิ่งที่ข้อความต้นฉบับกล่าวอ้าง **"เป็นเรื่องจริง/เกิดขึ้นจริง"**
+   - **บิดเบือน (Distorted / Misleading):** ข้อความต้นฉบับมีเค้าโครงจริงบางส่วน แต่แต่งเติมตัวเลข, เปลี่ยนแปลงเจตนา, ตัดต่อบริบท, หรือชี้นำสังคมผิดทาง
+   - **ขัดแย้ง / เป็นเท็จ (Contradicted / Debunked):** แหล่งอ้างอิงระบุว่าเป็น **"ข่าวปลอม"**, "ไม่มีจริง", "เตือนภัย", "ปฏิเสธ", หรือรายงานสิ่งที่ตรงกันข้ามกับข้อความต้นฉบับอย่างสิ้นเชิง
+
+2. 🚨 **กฎเหล็กการตรวจจับข่าวปลอม/การหักล้าง (Anti-Fake & Debunk Detection):**
+   - ถ้าแหล่งอ้างอิงมีคำว่า 'ข่าวปลอม', 'เตือนภัย', 'ชี้แจงไม่จริง', 'ปฏิเสธ', 'ไม่มีนโยบาย', 'แอบอ้าง' หรือเนื้อหาข่าวปฏิเสธข้อความของผู้ใช้ → ต้องให้ **คะแนน 1 (0% ข้อมูลเท็จ)** หรือ **2 (25% บิดเบือน)** ทันที! ห้ามมองว่าสอดคล้องเพียงเพราะมีคีย์เวิร์ดเรื่องเดียวกันเด็ดขาด!
+   - หากข้อความต้นฉบับไม่มีหลักฐานยืนยันจากสื่อหลักเลย และเป็นข่าวลือไร้ที่มา ให้คะแนน 1 หรือ 2 ตามระดับความเสียหาย
+
+3. ⚖️ **เกณฑ์การให้คะแนนความสอดคล้อง (Score 1-5):**
+   - **5 (100% สอดคล้องสมบูรณ์):** สื่อหลักหรือหน่วยงานทางการ >= 2 แห่ง ยืนยันว่าข้อความต้นฉบับเป็นความจริง ถูกต้องทุกรายละเอียด
+   - **4 (75% สอดคล้องส่วนใหญ่):** ประเด็นหลักเป็นความจริง แต่อาจมีรายละเอียดปลีกย่อยหรือตัวเลขคลาดเคลื่อนเล็กน้อย
+   - **3 (50% ก้ำกึ่ง / ไม่สามารถสรุปได้):** สื่อหลักรายงานข้อมูลขัดแย้งกันเอง หรือหลักฐานยังไม่เพียงพอต่อการยืนยัน (เช่น ข่าวด่วนพึ่งเกิด)
+   - **2 (25% บิดเบือนบางส่วน):** มีความจริงบางส่วน แต่ส่วนสำคัญ (ตัวเลข, วันเวลา, บทบาทบุคคล) ถูกบิดเบือนไปจากข้อเท็จจริงของสื่อ
+   - **1 (0% ข้อมูลเท็จ / ขัดแย้งสิ้นเชิง):** ข้อความเป็นข่าวปลอม ถูกหักล้างโดยสิ้นเชิง หรือไม่มีข้อมูลความจริงตามที่อ้างเลย
+
+4. 📋 **กฎเหล็กการกรอกข้อมูลใน JSON:**
+   - `"supported_points"`: ระบุเฉพาะประเด็นในข้อความต้นฉบับที่ **"ได้รับการยืนยันว่าเป็นความจริงจากสื่อ"** (หากข้อความเป็นเท็จทั้งหมด ให้ใส่ `["ไม่พบประเด็นที่สอดคล้องกับข้อเท็จจริงของสื่อหลัก"]`)
+   - `"conflicting_points"`: ระบุประเด็นที่ **"เป็นเท็จ บิดเบือน หรือถูกสื่อหลักหักล้าง/เตือนภัย"** พร้อมอ้างอิง เช่น `[อ้างอิง 1]` (หากไม่มีข้อมูลขัดแย้ง ให้ใส่ `["ไม่พบประเด็นที่ขัดแย้งกับแหล่งอ้างอิงหลัก"]`)
+   - `"verdict_summary"`: สรุปผลชัดเจนตรงไปตรงมา เช่น "ข้อความดังกล่าวเป็นข่าวปลอม โดยศูนย์ต่อต้านข่าวปลอมและสื่อหลักยืนยันตรงกันว่าเป็นข้อมูลเท็จ" หรือ "ข้อความดังกล่าวสอดคล้องกับรายงานข่าวของสื่อหลัก"
+
+5. 🧭 **น้ำหนักหลักฐานตามระดับความน่าเชื่อถือ (Tier):**
+   - 🏛️ **Tier 0:** หน่วยงานรัฐบาลไทย (.go.th) / ศูนย์ตรวจสอบข่าวลวง (antifakenewscenter, cofact, sure.factcheckthailand) → น้ำหนักสูงสุด
+   - 📰 **Tier 1:** สื่อหลักของไทย (ThaiPBS, ไทยรัฐ, ข่าวสด, มติชน, ช่อง 7, The Thaiger, LINE TODAY) และสำนักข่าวต่างประเทศระดับโลก (BBC, Reuters, AP, Bloomberg, CNA, Nikkei Asia) → น้ำหนักสูง
+   - 🌐 **Tier 2:** สื่ออิสระออนไลน์ / สื่อท้องถิ่น → น้ำหนักปานกลาง
 
 ⚠️ คำเตือนขั้นเด็ดขาด: ห้ามสร้างข้อความ หรือ Thought process เป็นภาษาจีน (Chinese) หรือภาษาอื่นที่ไม่ใช่ภาษาไทยเด็ดขาด! ตอบกลับเป็นภาษาไทยเท่านั้น!
 
-เกณฑ์ผลตรวจสอบ:
-- SUPPORTED = หลักฐานสนับสนุน
-- MOSTLY_SUPPORTED = หลักฐานสนับสนุนเป็นส่วนใหญ่
-- MIXED = มีทั้งหลักฐานสนับสนุนและขัดแย้ง
-- MOSTLY_CONTRADICTED = หลักฐานขัดแย้งเป็นส่วนใหญ่
-- CONTRADICTED = หลักฐานขัดแย้ง
-- INSUFFICIENT_EVIDENCE = ไม่มีแหล่งอ้างอิงเกี่ยวข้องเพียงพอ ห้ามสรุปว่าเป็นข่าวเท็จ
-
-คะแนน 1-5 เป็นเพียงรหัสภายในเพื่อความเข้ากันได้ ไม่ใช่เปอร์เซ็นต์ความจริง หากไม่มีอ้างอิงที่เกี่ยวข้องให้ score เป็น null
-
 ตอบกลับเป็น JSON รูปแบบนี้เท่านั้น:
 {{
-    "verdict_summary": "สรุปผลการเปรียบเทียบ 1 ประโยค",
-    "supported_points": ["ประเด็นที่สอดคล้องกับแหล่งอ้างอิง"],
-    "conflicting_points": ["ประเด็นที่ขัดแย้งอย่างชัดเจน (หากไม่มี ให้เว้นว่าง)"],
-    "comparative_analysis": "อธิบายผลการเปรียบเทียบอย่างเป็นเหตุเป็นผล",
-    "claim_assessments": [
-        {{
-            "claim_text": "ข้อกล่าวอ้างย่อยที่ตรวจสอบ",
-            "verdict": "SUPPORTED",
-            "supporting_ref_ids": [1],
-            "conflicting_ref_ids": [],
-            "explanation": "เหตุผลจากหลักฐานที่อ้างถึง"
-        }}
-    ],
-    "relevant_ref_ids": [ระบุรหัสอ้างอิงของข่าวที่เกี่ยวข้องจริงๆ],
-    "verdict": "SUPPORTED, MOSTLY_SUPPORTED, MIXED, MOSTLY_CONTRADICTED, CONTRADICTED หรือ INSUFFICIENT_EVIDENCE",
-    "score": 1
+    "thought": "วิเคราะห์เปรียบเทียบเป็นภาษาไทยสั้นๆ",
+    "verdict_summary": "สรุปผล 1 ประโยคชัดเจน (ระบุจำนวนแหล่งที่สอดคล้อง/ขัดแย้ง)",
+    "supported_points": ["ประเด็นที่ได้รับการยืนยันว่าเป็นความจริง (พร้อมระบุ [อ้างอิง X])"],
+    "conflicting_points": ["ประเด็นที่เป็นเท็จ บิดเบือน หรือถูกหักล้าง (พร้อมระบุ [อ้างอิง X])"],
+    "comparative_analysis": "บทวิเคราะห์เปรียบเทียบเชิงลึกอย่างเป็นเหตุเป็นผล อ้างอิงหมายเลขแหล่ง [อ้างอิง X] เสมอ",
+    "relevant_ref_ids": [รหัสตัวเลขของอ้างอิงที่เกี่ยวข้องจริง เช่น 1, 2],
+    "score": ตัวเลข 1-5 ตามเกณฑ์ความถูกต้องจริง
 }}"""
-    
-    final_result = call_openrouter(
-        prompt,
-        "You are a Comparative Analyst. STRICTLY THAI LANGUAGE ONLY. DO NOT OUTPUT CHINESE CHARACTERS. Output strictly in JSON format in THAI.",
-        model=model or ANALYZER_MODEL,
-        timeout=min(ANALYZER_TIMEOUT_SECONDS, timeout_seconds) if timeout_seconds else ANALYZER_TIMEOUT_SECONDS,
-        max_tokens=1600,
-        response_schema=ANALYSIS_RESPONSE_SCHEMA,
-        schema_name="fact_check_analysis",
-        provider_sort=ANALYZER_PROVIDER_SORT,
-    )
-    validated = validate_ai_response(final_result, references=references)
-    if validated.get("verdict") in {"MIXED", "MOSTLY_CONTRADICTED", "CONTRADICTED"}:
-        return critic_review_analysis(news_text, references, validated)
-    return validated
+    return system_msg, prompt
+
+
+def analyze_fact_checking(news_text: str, references: list, current_date_str: str, source_url: str = "", timeout: float = None, content_type: str = "NEWS_CLAIM", content_timeline: str = "ไม่ระบุ", publish_date_context: str = "ไม่ระบุ") -> dict:
+    if timeout is None:
+        timeout = _analyzer_default_timeout()
+    try:
+        max_refs = int(os.getenv("ANALYZER_MAX_REFERENCES", "5"))
+    except ValueError:
+        max_refs = 5
+    try:
+        ref_chars = int(os.getenv("ANALYZER_REFERENCE_CHARACTERS", "600"))
+    except ValueError:
+        ref_chars = 600
+
+    try:
+        analyzer_max_tokens = int(os.getenv("ANALYZER_MAX_TOKENS", "1024"))
+    except ValueError:
+        analyzer_max_tokens = 1024
+
+    clean_claim = sanitize_for_api(news_text[:2000])
+    ref_text = _build_analyzer_ref_text(references, max_refs=max_refs, max_chars=ref_chars)
+
+    is_official_source = bool(source_url and (".go.th" in source_url.lower() or ".gov" in source_url.lower() or 'antifakenewscenter.com' in source_url.lower()))
+    origin_info = f"ดึงมาจากเว็บไซต์ทางการ (Official Source): {source_url}" if is_official_source else "ข้อความทั่วไป / โซเชียลมีเดีย"
+    current_time_context = get_current_thai_time()
+
+    system_msg, prompt = _build_analyzer_prompt(clean_claim, origin_info, ref_text, current_time_context, content_type, content_timeline, publish_date_context)
+    _attempt_start = time.time()
+    final_result, meta = _call_openrouter_with_meta(prompt, system_msg, timeout=timeout, model=AI_MODEL, max_tokens=analyzer_max_tokens)
+    _attempt_elapsed = time.time() - _attempt_start
+
+    if meta.get("payment_required"):
+        return validate_ai_response({"comparative_analysis": "Error 402: OpenRouter API เครดิตหมด (Payment Required) — กรุณาเติมเครดิตที่ openrouter.ai แล้วลองใหม่"}, force_error=True)
+
+    # Retry ครั้งเดียวด้วย context ที่เล็กลง (6 refs x 600 ตัวอักษร) เฉพาะเมื่อ
+    # รอบแรกล้มเร็ว (JSON เสีย/ถูกตัด) ภายใน 60% ของงบ — ถ้ารอบแรกโดนตัดเพราะ
+    # หมดงบช้า ๆ แปลว่าไม่มีงบเหลือให้ retry แล้ว จะได้ไม่ยืดเลย deadline
+    if (
+        (meta.get("truncated") or not final_result)
+        and references
+        and timeout
+        and timeout >= 8
+        and _attempt_elapsed < timeout * 0.6
+    ):
+        retry_budget = max(5.0, timeout - _attempt_elapsed - 1.0)
+        compact_ref_text = _build_analyzer_ref_text(references, max_refs=6, max_chars=600)
+        compact_system, compact_prompt = _build_analyzer_prompt(clean_claim, origin_info, compact_ref_text, current_time_context, content_type, content_timeline, publish_date_context)
+        retry_result, _retry_meta = _call_openrouter_with_meta(compact_prompt, compact_system, timeout=retry_budget, model=AI_MODEL, max_tokens=analyzer_max_tokens)
+        if _retry_meta.get("payment_required"):
+            return validate_ai_response({"comparative_analysis": "Error 402: OpenRouter API เครดิตหมด (Payment Required) — กรุณาเติมเครดิตที่ openrouter.ai แล้วลองใหม่"}, force_error=True)
+        if retry_result:
+            final_result = retry_result
+
+    if not final_result:
+        return validate_ai_response({"comparative_analysis": "❌ Error: AI ไม่สามารถประมวลผลการเปรียบเทียบได้"}, force_error=True)
+
+    return validate_ai_response(final_result)
 
 def critic_review_analysis(news_text: str, references: list, initial_analysis: dict) -> dict:
-    reviewed = validate_ai_response(initial_analysis, references=references)
-    validation_checks = dict(reviewed.get("validation_checks", {}))
-    validation_checks["critic_review_applied"] = True
-    validation_checks["critic_review_method"] = "deterministic_claim_evidence_consistency"
-    reviewed["validation_checks"] = validation_checks
-    return reviewed
+    return validate_ai_response(initial_analysis)
