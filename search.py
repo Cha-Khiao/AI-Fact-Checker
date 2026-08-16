@@ -1,1418 +1,1275 @@
-"""Low-latency, source-aware retrieval across Exa and Serper.
-
-`search_news_references` keeps the legacy list return type used by Streamlit.
-Backend/API callers should prefer `search_news_references_with_diagnostics` so a
-provider failure is not confused with a valid search that found no evidence.
-"""
-
-from __future__ import annotations
-
-import concurrent.futures
+import json
 import os
 import re
-import time
-import unicodedata
-from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
-
-import requests
+import logging
+import concurrent.futures
+from datetime import datetime, timedelta
+from urllib.parse import urlparse
 from dotenv import load_dotenv
 
-os.environ.setdefault(
-    "PYTHAINLP_DATA", os.path.join(os.path.dirname(__file__), ".pythainlp-data")
-)
-try:
-    from pythainlp.tokenize import word_tokenize as thai_word_tokenize
-except (ImportError, OSError):  # deterministic n-gram fallback keeps the system usable
-    thai_word_tokenize = None
+import http_client
 
-from http_client import get_session, split_timeout
-from source_policy import (
-    FACT_CHECK_DOMAINS,
-    FOREIGN_GOVERNMENT_DOMAINS,
-    INTERNATIONAL_ORGANIZATION_DOMAINS,
-    REGULATORY_ORGANIZATION_DOMAINS,
-    TRUSTED_MEDIA_DOMAINS,
-    classify_source,
-)
-
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-EXA_SEARCH_URL = "https://api.exa.ai/search"
-EXA_CONTENTS_URL = "https://api.exa.ai/contents"
-SERPER_SEARCH_URL = "https://google.serper.dev/search"
-SERPER_NEWS_URL = "https://google.serper.dev/news"
-DEFAULT_SEARCH_TIMEOUT_SECONDS = 8.0
-MAX_SNIPPET_CHARACTERS = 1800
 
-DOCUMENT_EXTENSIONS = {
-    ".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx",
-    ".csv", ".rtf", ".odt", ".ods", ".odp", ".zip", ".rar", ".7z", ".gz",
-}
-
-# Query-string keys whose value, when it points at a document, means the link is a
-# download/viewer wrapper rather than a readable HTML page.
-DOCUMENT_QUERY_KEYS = {
-    "file", "filename", "document", "attachment", "url", "target", "src",
-    "download", "path", "fileurl", "docurl",
-}
-
-# Path segments that unambiguously serve a file rather than an HTML article, even
-# when the URL carries no file extension (common on Thai government CMS portals).
-# Kept strict so ordinary slugs like ".../how-to-download-the-app" are not caught.
-FILE_ENDPOINT_SEGMENTS = {
-    "getfile", "get_file", "filedownload", "file_download", "downloadfile",
-    "download_file", "servefile", "serve_file", "viewfile", "view_file",
-    "openfile", "fetchfile", "download.php", "download.aspx", "download.jsp",
-    "getfile.php", "getfile.aspx", "file.aspx", "showfile", "getdoc",
-    "getattachment", "download.do", "attachment.php",
-}
-
-# Document/flipbook platforms that only ever host a file inside an in-page viewer
-# — the user cannot read them as an ordinary HTML article, and many wrap a PDF.
-DOCUMENT_VIEWER_HOSTS = {
-    "issuu.com", "anyflip.com", "fliphtml5.com", "online.fliphtml5.com",
-    "pubhtml5.com", "online.pubhtml5.com", "calameo.com", "scribd.com",
-    "slideshare.net", "flippingbook.com", "flowpaper.com", "yumpu.com",
-}
-
-# Substrings that mark an in-browser PDF viewer regardless of host (Google gview,
-# Mozilla pdf.js, generic web/viewer.html shells). These serve a PDF, not an HTML
-# article, so the reference would open as a file the user must scroll inside.
-PDF_VIEWER_MARKERS = (
-    "/gview", "web/viewer.html", "pdfjs", "pdf.js", "/flipbook", "/flippingbook",
-)
-
-BLACKLISTED_DOMAINS = (
-    "youtube.com", "youtu.be", "tiktok.com", "facebook.com", "instagram.com",
-    "x.com", "twitter.com", "vimeo.com", "dailymotion.com", "line.me",
-    "blockdit.com", "pantip.com", "wikipedia.org", "wiktionary.org",
-    "longdo.com", "thai-language.com",
-)
-
-TRACKING_QUERY_PARAMETERS = {
-    "fbclid", "gclid", "dclid", "msclkid", "mc_cid", "mc_eid", "ref",
-    "ref_src", "source", "igshid", "srsltid",
-}
-
-QUERY_STOPWORDS = {
-    "การ", "ของ", "และ", "หรือ", "ที่", "ใน", "เป็น", "จาก", "ให้", "ว่า",
-    "the", "a", "an", "and", "or", "of", "in", "on", "to", "for",
-}
-
-QUANTITY_INTENT_PATTERN = re.compile(
-    r"(จำนวน|กี่|เท่าไร|ทั้งหมด|รวมทั้งสิ้น|อัตรา|ร้อยละ|เปอร์เซ็นต์|มูลค่า|ราคา|ยอด|สถิติ)",
-    re.IGNORECASE,
-)
-
-# Minimum relevance a candidate must earn from claim wording alone (keyword/query
-# overlap, coverage, location, before any provenance/provider bonus). This stops a
-# high-tier source from being ranked as evidence when it is off-topic.
-TOPICAL_RELEVANCE_FLOOR = 20
-
-
-def _get_api_key(name: str) -> str:
-    """Read a key without logging its value; explicit empty env disables fallback."""
-    if name in os.environ:
-        return os.environ.get(name, "").strip()
+def _max_ref_age_days() -> int:
+    """ข่าวขุด/ข่าวติดตาม/ข่าวภายใน 1 ปี → ให้โอกาสค้นหาเจอ (default 365 วัน)."""
     try:
-        import streamlit as st
-
-        return str(st.secrets.get(name, "")).strip()
-    except (ImportError, FileNotFoundError, KeyError, AttributeError):
-        return ""
-
-
-def _search_timeout_seconds() -> float:
-    raw_value = os.getenv("SEARCH_TIMEOUT_SECONDS", "").strip()
-    try:
-        value = float(raw_value) if raw_value else DEFAULT_SEARCH_TIMEOUT_SECONDS
+        return max(30, int(os.getenv("MAX_REF_AGE_DAYS", "365")))
     except ValueError:
-        value = DEFAULT_SEARCH_TIMEOUT_SECONDS
-    return min(15.0, max(2.0, value))
+        return 365
 
 
-def fetch_exa_api(payload, api_key, timeout=DEFAULT_SEARCH_TIMEOUT_SECONDS):
-    """Call Exa and raise on failure so the orchestrator can report diagnostics."""
-    response = get_session().post(
-        EXA_SEARCH_URL,
-        json=payload,
-        headers={
-            "accept": "application/json",
-            "content-type": "application/json",
-            "x-api-key": api_key,
-        },
-        timeout=split_timeout(timeout),
-    )
-    response.raise_for_status()
-    data = response.json()
-    if not isinstance(data, dict):
-        raise ValueError("Exa returned a non-object response")
-    results = data.get("results", [])
-    return results if isinstance(results, list) else []
-
-
-def fetch_serper_api(payload, api_key, timeout=DEFAULT_SEARCH_TIMEOUT_SECONDS):
-    """Call Serper's Google Search endpoint and return organic results."""
-    response = get_session().post(
-        SERPER_SEARCH_URL,
-        json=payload,
-        headers={
-            "accept": "application/json",
-            "content-type": "application/json",
-            "X-API-KEY": api_key,
-        },
-        timeout=split_timeout(timeout),
-    )
-    response.raise_for_status()
-    data = response.json()
-    if not isinstance(data, dict):
-        raise ValueError("Serper returned a non-object response")
-    results = data.get("organic", [])
-    return results if isinstance(results, list) else []
-
-
-def fetch_serper_news(payload, api_key, timeout=DEFAULT_SEARCH_TIMEOUT_SECONDS):
-    """Call Serper News for the adaptive second wave."""
-    response = get_session().post(
-        SERPER_NEWS_URL,
-        json=payload,
-        headers={
-            "accept": "application/json",
-            "content-type": "application/json",
-            "X-API-KEY": api_key,
-        },
-        timeout=split_timeout(timeout),
-    )
-    response.raise_for_status()
-    data = response.json()
-    if not isinstance(data, dict):
-        raise ValueError("Serper News returned a non-object response")
-    results = data.get("news", [])
-    return results if isinstance(results, list) else []
-
-
-def fetch_exa_contents(urls, api_key, timeout=5.0):
-    """Batch-hydrate Serper-only discoveries through Exa's contents endpoint."""
-    response = get_session().post(
-        EXA_CONTENTS_URL,
-        json={
-            "urls": urls,
-            "text": {"maxCharacters": MAX_SNIPPET_CHARACTERS},
-            "maxAgeHours": 24,
-            "livecrawlTimeout": 2500,
-        },
-        headers={
-            "accept": "application/json",
-            "content-type": "application/json",
-            "x-api-key": api_key,
-        },
-        timeout=split_timeout(timeout),
-    )
-    response.raise_for_status()
-    data = response.json()
-    return data if isinstance(data, dict) else {}
-
-
-def canonicalize_url(url: str) -> str:
-    """Normalize URLs for cross-provider deduplication without losing article IDs."""
-    value = str(url or "").strip()
-    if not value:
-        return ""
-    parsed = urlparse(value)
-    scheme = parsed.scheme.lower() if parsed.scheme else "https"
-    hostname = (parsed.hostname or "").lower().removeprefix("www.")
-    if not hostname:
-        return ""
+def _get_planner_timeout() -> float:
     try:
-        port = parsed.port
+        return float(os.getenv("PLANNER_TIMEOUT_SECONDS", "45"))
     except ValueError:
-        return ""
-    netloc = hostname if not port else f"{hostname}:{port}"
-    path = re.sub(r"/{2,}", "/", parsed.path or "/")
-    if path != "/":
-        path = path.rstrip("/")
-    clean_query = []
-    for key, query_value in parse_qsl(parsed.query, keep_blank_values=False):
-        key_lower = key.lower()
-        if key_lower.startswith("utm_") or key_lower in TRACKING_QUERY_PARAMETERS:
-            continue
-        clean_query.append((key, query_value))
-    clean_query.sort(key=lambda pair: (pair[0].lower(), pair[1]))
-    return urlunparse((scheme, netloc, path, "", urlencode(clean_query), ""))
+        return 45.0
 
 
-def _domain_matches(domain: str, candidate: str) -> bool:
-    return domain == candidate or domain.endswith(f".{candidate}")
+def _parse_pub_date(pub_date) -> tuple:
+    """Parse publishedDate → (year_ce, days_old). คืน (None, None) ถ้า parse ไม่ได้."""
+    if not pub_date or str(pub_date).strip() in ("", "ไม่ระบุ"):
+        return None, None
+    text = str(pub_date).strip()
+    m = re.match(r'(\d{4})-(\d{2})-(\d{2})', text)
+    if m:
+        try:
+            dt = datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+            return dt.year, (datetime.now() - dt).days
+        except ValueError:
+            return None, None
+    # ฟอร์แมตไทย: "14 ส.ค. 2569" / "14 สิงหาคม 2569"
+    m = re.search(r'(\d{1,2})\s+([^\s]+)\s+(\d{4})', text)
+    if m:
+        th_months = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.',
+                     'มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน', 'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม']
+        month_str = m.group(2).strip()
+        if month_str in th_months:
+            idx = th_months.index(month_str) % 12
+            year_raw = int(m.group(3))
+            year_ce = year_raw - 543 if year_raw > 2500 else year_raw
+            try:
+                dt = datetime(year_ce, idx + 1, int(m.group(1)))
+                return dt.year, (datetime.now() - dt).days
+            except ValueError:
+                return None, None
+    return None, None
 
 
-def _is_blocklisted(url: str) -> bool:
-    domain = (urlparse(url).hostname or "").lower().removeprefix("www.")
-    return any(_domain_matches(domain, item) for item in BLACKLISTED_DOMAINS)
-
-
-def _is_document_result(url: str, title: str = "", snippet: str = "") -> bool:
-    """Reject downloadable documents while allowing an HTML landing page about one.
-
-    The user must be able to click every reference and read it in the browser, so a
-    link that forces a file download is never a valid HTML source. Detection covers
-    the file extension anywhere in the path (``/report.pdf/view``), download/viewer
-    query wrappers, and known viewer hosts that serve a file without an extension.
-    """
-    value = str(url or "").strip().lower()
-    parsed = urlparse(value)
-    path = parsed.path.rstrip("/")
-
-    # A document extension on any path segment, not only the final one.
-    for segment in path.split("/"):
-        if any(segment.endswith(extension) for extension in DOCUMENT_EXTENSIONS):
-            return True
-
-    # Download/viewer wrappers that carry the real file in a query parameter.
-    for key, parameter_value in parse_qsl(parsed.query, keep_blank_values=True):
-        parameter_lower = parameter_value.lower()
-        if key.lower() in DOCUMENT_QUERY_KEYS and any(
-            extension in parameter_lower for extension in DOCUMENT_EXTENSIONS
-        ):
-            return True
-
-    # Path endpoints that serve a file with no extension (CMS download handlers).
-    path_segments = [segment for segment in path.split("/") if segment]
-    if any(segment in FILE_ENDPOINT_SEGMENTS for segment in path_segments):
-        return True
-
-    # Known viewer / forced-download / document hosts that emit a file rather than a
-    # readable news article, with or without a clean extension.
-    host = (parsed.hostname or "").removeprefix("www.")
-    query_lower = parsed.query.lower()
-    if host == "docs.google.com" and any(
-        marker in path for marker in ("/viewer", "/document/d", "/spreadsheets/d", "/presentation/d")
-    ):
-        return True
-    if host == "drive.google.com" and (
-        path.startswith("/file/") or path.startswith("/uc") or "export=download" in query_lower
-    ):
-        return True
-
-    # A PDF opened inside an in-page viewer/flipbook still forces the user to read a
-    # file rather than an article — reject the viewer hosts and viewer URL shells.
-    if any(host == viewer or host.endswith(f".{viewer}") for viewer in DOCUMENT_VIEWER_HOSTS):
-        return True
-    full_url = f"{path}?{query_lower}"
-    if any(marker in full_url for marker in PDF_VIEWER_MARKERS):
-        return True
-
-    title_text = str(title or "").lower()
-    explicit_markers = (
-        "[pdf]", "ไฟล์ pdf", "ดาวน์โหลด pdf", "เอกสาร pdf",
-        "ไฟล์ word", "ไฟล์ excel", "ไฟล์ powerpoint",
-    )
-    return any(marker in title_text for marker in explicit_markers) or bool(
-        re.search(r"\b(?:pdf|docx?|xlsx?|pptx?)\b", title_text)
-    )
-
-
-def is_actual_article(url, title, snippet=""):
-    parsed = urlparse(str(url or "").lower())
-    path = parsed.path
-    path_parts = [part for part in path.split("/") if part]
-    title_lower = str(title or "").lower()
-
-    if _is_document_result(url, title, snippet):
+def _ref_too_old(pub_date, max_days: int) -> bool:
+    """Age of News (Recency): ใช้ Day-based calculation (default 365 วัน หรือ ข้ามปีเกินไป)."""
+    year_ce, days_old = _parse_pub_date(pub_date)
+    if days_old is None:
         return False
+    # ถ้าเป็นข่าวในปีปัจจุบัน (CE Year) ไม่เตะทิ้งเด็ดขาด เพื่อรองรับข่าวขุด/ข่าวติดตาม
+    current_year = datetime.now().year
+    if year_ce and year_ce >= current_year:
+        return False
+    return days_old > max_days
+
+
+def _ref_age_penalty(pub_date, max_days: int) -> int:
+    """ให้คะแนนโบนัสแก่ข่าวสดใหม่ และลดคะแนนเล็กน้อยสำหรับข่าวเก่าข้ามปี (ไม่เตะทิ้ง)."""
+    _year_ce, days_old = _parse_pub_date(pub_date)
+    if days_old is None:
+        return 0
+    if days_old <= 14:
+        return 10  # ข่าวสดใหม่มาก (2 สัปดาห์)
+    elif days_old <= 90:
+        return 5   # ข่าว 1-3 เดือน
+    elif days_old > 365:
+        return -10 # ข่าวเก่าเกิน 1 ปี
+    return 0
+
+def fetch_exa_api(payload, api_key, timeout=25):
+    url = "https://api.exa.ai/search"
+    headers = {
+        "accept": "application/json",
+        "content-type": "application/json",
+        "x-api-key": api_key
+    }
+    try:
+        response = http_client.wall_clock_request(
+            "POST", url, json=payload, headers=headers,
+            timeout=http_client.split_timeout(timeout),
+        )
+        response.raise_for_status()
+        data = response.json()
+        return data.get("results", [])
+    except Exception as e:
+        logger.error("Exa API Error: %s", e)
+        return []
+
+def fetch_serper_api(query, api_key, num_results=10, timeout=15, tbs=""):
+    """Fetch from Google Organic Search (/search)."""
+    url = "https://google.serper.dev/search"
+    headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}
+    payload = {"q": query, "gl": "th", "hl": "th", "num": num_results}
+    if tbs:
+        payload["tbs"] = tbs
+    try:
+        response = http_client.wall_clock_request(
+            "POST", url, json=payload, headers=headers,
+            timeout=http_client.split_timeout(timeout),
+        )
+        response.raise_for_status()
+        data = response.json()
+        results = []
+        for item in data.get("organic", []):
+            results.append({
+                "title": item.get("title", ""),
+                "url": item.get("link", ""),
+                "text": item.get("snippet", ""),
+                "publishedDate": item.get("date", "ไม่ระบุ"),
+            })
+        return results
+    except Exception as e:
+        logger.error("Serper API Error: %s", e)
+        return []
+
+
+def fetch_serper_news_api(query, api_key, num_results=10, timeout=15):
+    """Fetch from Google News tab (/news) — ดีสำหรับข่าวสด/ข่าวที่ยังไม่ติดหน้าแรก Google Search."""
+    url = "https://google.serper.dev/news"
+    headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}
+    payload = {"q": query, "gl": "th", "hl": "th", "num": num_results}
+    try:
+        response = http_client.wall_clock_request(
+            "POST", url, json=payload, headers=headers,
+            timeout=http_client.split_timeout(timeout),
+        )
+        response.raise_for_status()
+        data = response.json()
+        results = []
+        for item in data.get("news", []):
+            results.append({
+                "title": item.get("title", ""),
+                "url": item.get("link", ""),
+                "text": item.get("snippet", ""),
+                "publishedDate": item.get("date", "ไม่ระบุ"),
+            })
+        return results
+    except Exception as e:
+        logger.error("Serper News API Error: %s", e)
+        return []
+
+def is_actual_article(url: str, title: str) -> bool:
+    """ตรวจสอบว่าเป็นบทความข่าวเดี่ยวจริง ไม่ใช่หน้าแรก, หมวดหมู่, หรือหน้าลิสต์ข่าวรวม.
+    
+    - ตัดทิ้ง: หน้าหมวดหมู่ (e.g. /news/politic, /category/foreign, /tag/...), หน้าแรก, หน้าค้นหา
+    - ยอมรับ: ข่าวสรุปประเด็น/สรุปเหตุการณ์ประจำปี (e.g. สรุป 10 ข่าวใหญ่รอบปี 2025, รวมเหตุการณ์สำคัญปี 2025)
+    """
+    parsed = urlparse(url.lower())
+    path = parsed.path.rstrip('/')
+    path_parts = [p for p in path.split('/') if p]
+    title_lower = title.lower().strip()
+
+    # 1. Non-article file formats
+    if re.search(r'\.(pdf|doc|docx|xls|xlsx|ppt|pptx)($|\?)', url.lower()):
+        return False
+    if '[pdf]' in title_lower or 'pdf' in title_lower:
+        return False
+
+    # 2. Empty or root homepage paths
     if not path_parts:
         return False
-    if path in ("/", "/th", "/en", "/th/", "/en/", "/index.html", "/index.php", "/default.aspx", "/home"):
+    if path in ['/', '/th', '/en', '/th/', '/en/', '/index.html', '/index.php', '/default.aspx', '/home']:
         return False
 
-    aggregator_keywords = {
-        "category", "topic", "tag", "tags", "author", "page", "search",
-        "archive", "archives", "gallery", "calendar", "sitemap",
+    # 3. Explicit Category/Tag/Archive indicators in path
+    aggregator_keywords = [
+        'category', 'categories', 'topic', 'topics', 'tag', 'tags',
+        'author', 'page', 'search', 'archive', 'archives', 'gallery',
+        'calendar', 'sitemap', 'section', 'sections', 'feed', 'rss'
+    ]
+    if any(k in path_parts for k in aggregator_keywords):
+        last_part = path_parts[-1]
+        if last_part in aggregator_keywords or (len(path_parts) >= 2 and path_parts[-2] in aggregator_keywords and not re.search(r'\d{4,}', last_part) and len(last_part) < 15):
+            return False
+
+    # 4. Common News CMS Section Index Paths (e.g. /news/politic, /news/crime, /news/society)
+    section_names = {
+        'politic', 'politics', 'society', 'crime', 'foreign', 'international',
+        'economy', 'economic', 'business', 'entertainment', 'entertain', 'sport',
+        'sports', 'tech', 'technology', 'lifestyle', 'health', 'travel', 'auto',
+        'local', 'regional', 'general', 'opinion', 'editorial', 'special',
+        'breaking', 'latest', 'news', 'hot', 'viral', 'celebrity'
     }
-    if any(keyword in path_parts for keyword in aggregator_keywords):
-        return False
-
     if len(path_parts) == 1:
         single_path = path_parts[0]
-        if single_path in {"news", "latest", "pr", "article", "articles", "update", "ข่าวด่วน", "ข่าว"}:
+        if single_path in section_names or single_path in ['news', 'latest', 'pr', 'article', 'articles', 'update', 'ข่าวด่วน', 'ข่าว']:
             return False
-        if len(single_path) < 10 and not re.search(r"\.(html|htm|php|aspx)$", single_path):
+        if len(single_path) < 10 and not re.search(r'\.(html|htm|php|aspx)', single_path):
             return False
 
-    generic_titles = (
-        "หน้าแรก", "หน้าหลัก", "รวมข่าว", "ข่าวล่าสุด", "ข่าวด่วน", "home",
-        "official website", "เว็บไซต์ทางการ", "ข่าวที่เกี่ยวข้อง",
-    )
-    if any(generic_title in title_lower for generic_title in generic_titles) and len(title_lower) < 30:
+    if len(path_parts) == 2:
+        # e.g. /news/politic, /news/society, /lifestyle/travel
+        p0, p1 = path_parts[0], path_parts[1]
+        if (p0 in ['news', 'lifestyle', 'section', 'category', 'topic', 'th', 'en'] or p0 in section_names) and (p1 in section_names or p1 in ['all', 'latest', 'index']):
+            return False
+
+    # 5. Generic Title Filter (หน้าแรก, รวมข่าวล่าสุด) vs Recap Articles (สรุปข่าวปี 2025)
+    exact_generic_titles = [
+        'หน้าแรก', 'หน้าหลัก', 'ข่าววันนี้', 'ข่าวล่าสุด', 'ข่าวด่วน', 'รวมข่าว',
+        'ข่าวทั้งหมด', 'home', 'official website', 'เว็บไซต์ทางการ', 'สารบัญ'
+    ]
+    if title_lower in exact_generic_titles:
         return False
-    if len(str(title or "").strip().split()) <= 2 and len(str(title or "")) < 20:
+
+    # Titles that start with generic labels and have no specific subject/year
+    if any(title_lower.startswith(g) for g in exact_generic_titles) and len(title_lower) < 20 and not re.search(r'\b(25\d{2}|20\d{2})\b', title_lower):
         return False
+
+    # 6. Academic Thesis / Dissertation / Institutional Repository Filter (ตัดวิทยานิพนธ์/คลังวิจัยมหาวิทยาลัยที่ไม่ใช่ข่าว)
+    academic_path_patterns = ['/handle/', '/bitstream/', '/thesis', '/dissertation', '/dspace', '/repository', '/ethesis', '/tci-thaijo', '/e-journal']
+    if any(pat in path for pat in academic_path_patterns):
+        return False
+    if any(d in parsed.netloc for d in ['cuir.car.chula.ac.th', 'repository.', 'dspace.', 'thailis.or.th', 'thaijo.org']):
+        return False
+    academic_title_keywords = ['วิทยานิพนธ์', 'สารนิพนธ์', 'ดุษฎีนิพนธ์', 'งานวิจัยเรื่อง', 'วารสารวิชาการ', 'บทความวิจัย', 'master thesis', 'doctoral dissertation']
+    if any(ak in title_lower for ak in academic_title_keywords):
+        return False
+
+    if len(title.strip()) < 8:
+        return False
+
     return True
 
 
-def _normalize_publication_date(value) -> tuple[str, str]:
-    raw_value = str(value or "").strip()
-    match = re.search(r"\b(20\d{2}|25\d{2})[-/](\d{1,2})[-/](\d{1,2})\b", raw_value)
-    if not match:
-        return "ไม่ระบุ", raw_value
-    year, month, day = match.groups()
-    return f"{int(year):04d}-{int(month):02d}-{int(day):02d}", raw_value
-
-
-def _normalize_exa_results(results, query_kind: str) -> list[dict]:
-    normalized = []
-    for index, item in enumerate(results or [], start=1):
-        if not isinstance(item, dict):
-            continue
-        published_date, published_raw = _normalize_publication_date(item.get("publishedDate"))
-        highlights = item.get("highlights") or []
-        highlight_text = "\n".join(
-            str(highlight).strip() for highlight in highlights
-            if str(highlight).strip()
-        )
-        raw_text = str(item.get("text") or "").strip()
-        combined_text = "\n".join(
-            part for part in (highlight_text, raw_text) if part
-        )[:MAX_SNIPPET_CHARACTERS]
-        normalized.append({
-            "title": str(item.get("title") or "ข่าวที่เกี่ยวข้อง").strip(),
-            "href": str(item.get("url") or "").strip(),
-            "pub_date": published_date,
-            "published_raw": published_raw,
-            "snippet": combined_text,
-            "content_source": "exa_highlights" if highlight_text else "exa_text",
-            "providers": ["exa"],
-            "provider_ranks": {"exa": index},
-            "query_kinds": [query_kind],
-        })
-    return normalized
-
-
-def _normalize_serper_results(results, query_kind: str) -> list[dict]:
-    normalized = []
-    for index, item in enumerate(results or [], start=1):
-        if not isinstance(item, dict):
-            continue
-        published_date, published_raw = _normalize_publication_date(item.get("date"))
-        position = item.get("position")
-        rank = position if isinstance(position, int) and position > 0 else index
-        normalized.append({
-            "title": str(item.get("title") or "ข่าวที่เกี่ยวข้อง").strip(),
-            "href": str(item.get("link") or "").strip(),
-            "pub_date": published_date,
-            "published_raw": published_raw,
-            "snippet": str(item.get("snippet") or "")[:MAX_SNIPPET_CHARACTERS].strip(),
-            "content_source": "serper_snippet",
-            "providers": ["serper"],
-            "provider_ranks": {"serper": rank},
-            "query_kinds": [query_kind],
-        })
-    return normalized
-
-
-def _merge_duplicate(existing: dict, candidate: dict) -> None:
-    existing["providers"] = sorted(set(existing["providers"] + candidate["providers"]))
-    existing["provider_ranks"].update(candidate["provider_ranks"])
-    existing["query_kinds"] = sorted(set(existing["query_kinds"] + candidate["query_kinds"]))
-    if len(candidate.get("snippet", "")) > len(existing.get("snippet", "")):
-        existing["snippet"] = candidate["snippet"]
-        existing["content_source"] = candidate.get("content_source", existing.get("content_source"))
-    if existing.get("pub_date") == "ไม่ระบุ" and candidate.get("pub_date") != "ไม่ระบุ":
-        existing["pub_date"] = candidate["pub_date"]
-        existing["published_raw"] = candidate.get("published_raw", "")
-    if existing.get("title") == "ข่าวที่เกี่ยวข้อง" and candidate.get("title"):
-        existing["title"] = candidate["title"]
-
-
-def _meaningful_terms(value: str) -> list[str]:
-    normalized = unicodedata.normalize("NFKC", str(value or "")).lower()
-    normalized = normalized.replace("\u200b", " ").replace("\ufeff", " ")
-    if thai_word_tokenize is not None and re.search(r"[ก-๙]", normalized):
-        raw_terms = thai_word_tokenize(normalized, engine="newmm", keep_whitespace=False)
-        terms = [re.sub(r"[^a-zA-Z0-9ก-๙]", "", term) for term in raw_terms]
-    else:
-        terms = re.findall(r"[a-zA-Z0-9]+", normalized)
-        for thai_chunk in re.findall(r"[ก-๙]{3,}", normalized):
-            if len(thai_chunk) <= 6:
-                terms.append(thai_chunk)
-            else:
-                terms.extend(thai_chunk[index:index + 3] for index in range(len(thai_chunk) - 2))
-    return list(dict.fromkeys(
-        term for term in terms
-        if len(term) >= 2 and term not in QUERY_STOPWORDS and not term.isspace()
-    ))
-
-
-def build_fast_search_query(value: str, max_terms: int = 12) -> str:
-    """Build a bounded deterministic query for the planner-parallel Wave-0 search."""
-    try:
-        term_limit = min(20, max(4, int(max_terms)))
-    except (TypeError, ValueError):
-        term_limit = 12
-    terms = _meaningful_terms(value)
-    if terms:
-        return " ".join(terms[:term_limit])[:320].strip()
-    return re.sub(r"\s+", " ", str(value or "")).strip()[:320]
-
-
-def _minimum_relevance_score() -> int:
-    try:
-        value = int(os.getenv("MIN_RELEVANCE_SCORE", "22"))
-    except ValueError:
-        value = 22
-    return min(60, max(5, value))
-
-
-def _numeric_evidence_values(text: str) -> list[tuple[int, int, str]]:
-    values = []
-    for match in re.finditer(r"(?<![\wก-๙])[0-9๐-๙][0-9๐-๙,.]*(?![\wก-๙])", text):
-        raw_value = match.group(0).replace(",", "")
-        ascii_value = raw_value.translate(str.maketrans("๐๑๒๓๔๕๖๗๘๙", "0123456789"))
-        digits = re.sub(r"\D", "", ascii_value)
-        if len(digits) == 4 and (digits.startswith(("19", "20", "24", "25"))):
-            continue
-        values.append((match.start(), match.end(), match.group(0)))
-    return values
-
-
-def _direct_quantity_signals(text: str, core_phrases: list[str]) -> list[str]:
-    """Find a number close to the entity being measured, not merely anywhere on the page."""
-    numeric_values = _numeric_evidence_values(text)
-    if not numeric_values:
-        return []
-    entity_phrases = [
-        phrase for phrase in core_phrases
-        if len(phrase) >= 3 and not QUANTITY_INTENT_PATTERN.fullmatch(phrase)
-    ]
-    signals = []
-    for phrase in entity_phrases:
-        for entity_match in re.finditer(re.escape(phrase), text):
-            for number_start, number_end, raw_number in numeric_values:
-                number_before_gap = text[number_end:entity_match.start()] if number_end <= entity_match.start() else ""
-                entity_before_gap = text[entity_match.end():number_start] if entity_match.end() <= number_start else ""
-                pair_start = min(entity_match.start(), number_start)
-                pair_end = max(entity_match.end(), number_end)
-                pair_context = text[max(0, pair_start - 80):min(len(text), pair_end + 40)]
-                number_pattern = re.escape(raw_number)
-                phrase_pattern = re.escape(phrase)
-                relation_pattern = (
-                    r"(?:จำนวน|ทั้งหมด|รวมทั้งสิ้น|มี(?:จำนวน)?|ประกอบด้วย|แบ่งเป็น|"
-                    r"อยู่ที่|เท่ากับ|คิดเป็น|เพิ่มเป็น|ลดเหลือ|แตะ|สูงถึง|ต่ำถึง|ประมาณ)"
-                )
-                direct_measurement_pattern = re.compile(
-                    rf"{relation_pattern}"
-                    rf"\s*{number_pattern}\s*{phrase_pattern}"
-                    rf"|(?:รายชื่อ|บัญชีรายชื่อ)[^.!?\n]{{0,70}}{number_pattern}\s*{phrase_pattern}"
-                    rf"|{phrase_pattern}[^.!?\n]{{0,28}}"
-                    rf"{relation_pattern}"
-                    rf"\s*{number_pattern}"
-                    rf"|{number_pattern}\s*{phrase_pattern}\s*(?:ทั้งหมด|ทั่วประเทศ|รวมทั้งสิ้น)",
-                    re.IGNORECASE,
-                )
-                number_directly_labels_entity = (
-                    number_end <= entity_match.start()
-                    and len(number_before_gap) <= 16
-                    and not re.search(r"[a-zA-Zก-๙]{3,}", number_before_gap)
-                    and bool(direct_measurement_pattern.search(pair_context))
-                )
-                entity_has_quantity_predicate = (
-                    entity_match.end() <= number_start
-                    and len(entity_before_gap) <= 32
-                    and bool(direct_measurement_pattern.search(pair_context))
-                )
-                if number_directly_labels_entity or entity_has_quantity_predicate:
-                    signals.append(f"{raw_number}↔{phrase}")
-                    break
-            if signals:
-                break
-        if len(signals) >= 3:
-            break
-    return signals
-
-
-def build_verification_query(clean_query: str) -> str:
-    """Challenge numeric claims without repeating the proposed answer verbatim."""
-    value = str(clean_query or "").strip()
-    number_neutral = re.sub(r"(?<![\wก-๙])\d[\d,.]*(?![\wก-๙])", " ", value)
-    number_neutral = re.sub(r"\s+", " ", number_neutral).strip()
-    if number_neutral and number_neutral != value:
-        return f"{number_neutral} จำนวนเท่าไร ข้อมูลที่ถูกต้อง แหล่งทางการ"
-    return f"{value} จริงหรือไม่ ตรวจสอบข้อเท็จจริง ข้อมูลที่ถูกต้อง"
-
-
-def _compose_enhanced_query(clean_query, core_keywords, locations, max_characters=240):
-    """Add planner context without repeating phrases already present in the query."""
-    parts = [str(clean_query or "").strip()]
-    combined_lower = parts[0].lower()
-    for value in list(core_keywords or []) + list(locations or []):
-        phrase = re.sub(r"\s+", " ", str(value or "")).strip()
-        if not phrase or phrase.lower() in combined_lower:
-            continue
-        candidate = " ".join(parts + [phrase]).strip()
-        if len(candidate) > max_characters:
-            continue
-        parts.append(phrase)
-        combined_lower = candidate.lower()
-    return " ".join(parts).strip()
-
-
-def _recency_adjustment(pub_date, now_year: int) -> tuple[int, str]:
-    """Score freshness when the claim itself does not pin a year.
-
-    Users flagged that off-topic results were mostly old articles that shared only
-    a few words. When no target year is requested, reward recent reporting and
-    penalize stale pages so age becomes part of ranking (and can drop a marginally
-    relevant old page below the minimum score). Buddhist-era years are converted.
-    """
-    match = re.match(r"(\d{4})", str(pub_date or "").strip())
-    if not match:
-        return 0, "unknown"
-    year = int(match.group(1))
-    if year >= 2400:  # Buddhist era → Gregorian
-        year -= 543
-    age = now_year - year
-    if age < 0:
-        return 0, "unknown"
-    if age <= 1:
-        return 6, "fresh"
-    if age <= 3:
-        return 2, "recent"
-    if age <= 5:
-        return -4, "aging"
-    return -10, "stale"
-
-
-def _target_year_forms(target_year: str) -> set[str]:
-    raw_year = str(target_year or "").strip()
-    if not re.fullmatch(r"\d{4}", raw_year):
-        return set()
-    numeric_year = int(raw_year)
-    if numeric_year >= 2400:
-        return {str(numeric_year), str(numeric_year - 543)}
-    if numeric_year >= 1900:
-        return {str(numeric_year), str(numeric_year + 543)}
-    return {raw_year}
-
-
-def _score_candidate(candidate, clean_query, locations, core_keywords, target_year):
-    title_lower = candidate["title"].lower()
-    snippet_lower = candidate["snippet"].lower()
-    text_content = f"{title_lower} {snippet_lower}"
-    query_terms = _meaningful_terms(clean_query)
-    core_phrases = [str(keyword).strip().lower() for keyword in core_keywords or [] if str(keyword).strip()]
-
-    matched_keywords = [keyword for keyword in core_phrases if keyword in text_content]
-    matched_query_terms = [term for term in query_terms if term in text_content]
-
-    query_coverage = len(matched_query_terms) / max(1, len(query_terms))
-    core_coverage = len(matched_keywords) / max(1, len(core_phrases)) if core_phrases else 0.0
-
-    # A candidate is topically relevant only when the claim's own wording appears —
-    # not when a single incidental term coincides. Requiring a core keyword, at least
-    # two query terms, or meaningful coverage keeps off-topic pages out before any
-    # provenance bonus can rescue them.
-    strong_topical_match = (
-        bool(matched_keywords)
-        or len(matched_query_terms) >= 2
-        or query_coverage >= 0.34
-    )
-    if not strong_topical_match:
-        candidate["_rejection_reason"] = "not_relevant"
-        return None
-
-    quantity_signals = []
-    if QUANTITY_INTENT_PATTERN.search(clean_query):
-        entity_phrases = list(dict.fromkeys(core_phrases + matched_query_terms))
-        quantity_signals = _direct_quantity_signals(text_content, entity_phrases)
-        if not quantity_signals:
-            candidate["_rejection_reason"] = "not_direct_evidence"
-            return None
-
-    # Topical score is earned only from claim↔candidate overlap (keywords, query
-    # terms, coverage, location). Provenance and provider bonuses are added *after*
-    # the topical floor so a high-tier but off-topic page can never qualify.
-    topical_score = 0
-    for keyword in matched_keywords:
-        topical_score += 28 if keyword in title_lower else 16
-    topical_score += min(30, sum(9 if term in title_lower else 4 for term in matched_query_terms))
-    topical_score += round((query_coverage * 12) + (core_coverage * 10))
-
-    normalized_locations = [str(location).strip().lower() for location in locations or [] if str(location).strip()]
-    if normalized_locations and any(location in text_content for location in normalized_locations):
-        topical_score += 14
-
-    year_forms = _target_year_forms(target_year)
-    temporal_alignment = "NOT_REQUESTED"
-    temporal_adjustment = 0
-    recency_label = "not_applicable"
-    if year_forms:
-        if any(year in text_content or candidate.get("pub_date", "").startswith(year) for year in year_forms):
-            temporal_adjustment = 10
-            temporal_alignment = "MATCH"
-        elif candidate.get("pub_date") not in {"", "ไม่ระบุ", None}:
-            temporal_adjustment = -3
-            temporal_alignment = "REVIEW_REQUIRED"
-        else:
-            temporal_alignment = "UNKNOWN"
-    else:
-        # No year in the claim: fall back to a freshness preference so results are
-        # not dominated by old articles that merely share a few words.
-        temporal_adjustment, recency_label = _recency_adjustment(
-            candidate.get("pub_date"), time.localtime().tm_year
-        )
-        temporal_alignment = f"RECENCY_{recency_label.upper()}"
-
-    if topical_score < TOPICAL_RELEVANCE_FLOOR:
-        candidate["_rejection_reason"] = "not_relevant"
-        return None
-
-    score = topical_score + temporal_adjustment
-    source_info = classify_source(candidate["href"])
-    score += min(16, source_info["source_weight"])
-    authority_matches = [
-        topic for topic in source_info.get("source_topics", [])
-        if topic.lower() in " ".join([clean_query, *core_phrases]).lower()
-    ]
-    if authority_matches:
-        score += min(12, 4 * len(authority_matches))
-    if len(candidate["providers"]) > 1:
-        score += 12
-    if "verification" in candidate.get("query_kinds", []):
-        score += 5
-    best_provider_rank = min(candidate["provider_ranks"].values(), default=20)
-    score += max(0, 11 - min(best_provider_rank, 11))
-    if len(candidate["snippet"]) >= 300:
-        score += 4
-
-    candidate.update(source_info)
-    candidate["authority_topic_matches"] = authority_matches
-    candidate["matched_keywords"] = matched_keywords
-    candidate["matched_query_terms"] = matched_query_terms
-    candidate["query_term_count"] = len(query_terms)
-    candidate["topical_score"] = topical_score
-    candidate["lexical_coverage"] = round(max(query_coverage, core_coverage), 3)
-    candidate["direct_evidence_signals"] = quantity_signals
-    candidate["temporal_alignment"] = temporal_alignment
-    candidate["recency"] = recency_label
-    candidate["relevance_score"] = min(100, score)
-    if candidate["relevance_score"] < _minimum_relevance_score():
-        candidate["_rejection_reason"] = "not_relevant"
-        return None
-    return candidate
-
-
-def _select_diverse_results(scored_results, num_results, excluded_counts):
-    """Preserve relevance order while reserving room for provenance and challenge evidence."""
-    limit = min(20, max(1, int(num_results)))
-    if not scored_results:
-        return []
-    selected_urls = set()
-    selected_reasons = {}
-    domain_counts = {}
-
-    def add_candidate(candidate, reason):
-        url = candidate["href"]
-        domain = candidate["source_domain"]
-        if url in selected_urls or len(selected_urls) >= limit:
-            return False
-        if domain_counts.get(domain, 0) >= 2:
-            return False
-        selected_urls.add(url)
-        selected_reasons.setdefault(url, []).append(reason)
-        domain_counts[domain] = domain_counts.get(domain, 0) + 1
+def _text_has_query_overlap(query: str, text: str, min_chars: int = 5) -> bool:
+    q = query.lower().strip()
+    t = text.lower()
+    if not q or not t:
+        return False
+    if q in t:
         return True
+    for i in range(len(q) - min_chars + 1):
+        if q[i:i + min_chars] in t:
+            return True
+    return False
 
-    top_score = scored_results[0]["relevance_score"]
-    add_candidate(scored_results[0], "top_relevance")
-    special_groups = [
-        (
-            "authoritative_or_fact_check",
-            lambda item: item["source_tier"] in {"A", "B", "D"},
-            25,
-        ),
-        (
-            "verification_query",
-            lambda item: "verification" in item.get("query_kinds", []),
-            20,
-        ),
-        (
-            "cross_provider",
-            lambda item: len(item.get("providers", [])) > 1,
-            20,
-        ),
+
+# คำสามัญที่ขึ้นหัวข่าวหลากเรื่องมากเกินไป — ห้ามใช้เป็น fallback overlap
+_GENERIC_QUERY_WORDS = {
+    'เพื่อนรัก', 'เพื่อน', 'แฟน', 'เมีย', 'ผัว', 'สามี', 'ภรรยา', 'หนุ่ม',
+    'สาว', 'รัก', 'เงิน', 'ลูก', 'ครอบครัว', 'คนรัก', 'แฟนเก่า', 'แม่',
+    'พ่อ', 'น้อง', 'พี่', 'ลุง', 'ป้า', 'ตา', 'ยาย', 'ให้', 'ข่าว', 'ด่วน',
+    'ล่าสุด', 'เปิดใจ', 'เผย', 'เจอ', 'พบ', 'ช็อก', 'สุด', 'มาก',
+}
+
+
+def _query_overlap_specific(fallback_query: str, text: str, min_chars: int = 6) -> bool:
+    """fallback overlap ที่กรองคำสามัญออก — กันขยะผ่านด้วยคำอย่าง "เพื่อนรัก"."""
+    if not fallback_query:
+        return False
+    specific = " ".join(w for w in fallback_query.split() if w not in _GENERIC_QUERY_WORDS)
+    return _text_has_query_overlap(specific, text, min_chars)
+
+
+def _match_single_kw(kw_str: str, text_lower: str) -> tuple:
+    """Helper to check if a keyword matches text strictly.
+    
+    Returns (is_match, is_numeric_exact)
+    """
+    if not kw_str:
+        return False, False
+    kw_clean = kw_str.strip().lower()
+    
+    # 1. Numeric keyword (เช่น "350 บาท", "10,000 บาท", "5 แสน")
+    nums = re.findall(r'\d+', kw_clean.replace(',', ''))
+    if nums:
+        # Normalize commas in text so "10,000" matches "10000"
+        text_no_commas = re.sub(r'(?<=\d),(?=\d)', '', text_lower)
+        if not all(num in text_no_commas for num in nums):
+            return False, False
+        # ถ้ามีคำไทยประกอบ (เช่น "บาท", "ล้าน", "เฟส") ต้องมีในข้อความด้วย
+        th_words = [w for w in re.findall(r'[\u0E00-\u0E7F]+', kw_clean) if len(w) > 1]
+        if th_words and not any(w in text_lower for w in th_words):
+            return False, False
+        return True, True
+
+    # 2. Non-numeric keyword
+    if kw_clean in text_lower:
+        return True, False
+    subwords = [w for w in kw_clean.split() if len(w) > 2]
+    if subwords and all(w in text_lower for w in subwords):
+        return True, False
+    return False, False
+
+
+def _keyword_partial_match(keywords: list, text: str) -> tuple:
+    """Check if any keyword strictly matches text.
+
+    Returns (has_match, match_score, matched_keywords, has_numeric_exact)
+    """
+    if not keywords:
+        return False, 0, [], False
+    
+    text_lower = text.lower()
+    matched = []
+    total_score = 0
+    has_numeric_exact = False
+    
+    for kw in keywords:
+        is_match, is_num = _match_single_kw(kw, text_lower)
+        if is_match:
+            matched.append(kw)
+            total_score += 15 if is_num else 10
+            if is_num:
+                has_numeric_exact = True
+    
+    return len(matched) > 0, total_score, matched, has_numeric_exact
+
+
+ACTION_KEYWORDS = {
+    'เด้ง', 'สั่งย้าย', 'ย้าย', 'สั่งฟาด', 'ฟาด', 'จับ', 'บุกจับ', 'จับกุม', 'ทลาย',
+    'ทุจริต', 'โกง', 'สแกมเมอร์', 'หลอก', 'ดูดเงิน', 'ยึดทรัพย์', 'ไฟไหม้', 'เพลิงไหม้',
+    'แผ่นดินไหว', 'น้ำท่วม', 'ชน', 'รถชน', 'อุบัติเหตุ', 'ตาย', 'เสียชีวิต', 'ฆ่า',
+    'ยิง', 'ฟ้อง', 'หย่า', 'แต่งงาน', 'แถลง', 'ประชุม', 'อนุมัติ', 'เคาะ', 'แจก',
+    'โอน', 'ปรับลด', 'ขึ้นภาษี', 'ลดราคา', 'อัดงบ', 'กู้', 'ช่วยเหลือ', 'ออม', 'สกัดจับ'
+}
+
+def _extract_tri_anchors(keywords: list, query: str = "") -> tuple:
+    """Classify keywords into Tri-Anchor dimensions: (Entities, Actions, Metrics)."""
+    entities = []
+    actions = []
+    metrics = []
+
+    combined = list(dict.fromkeys([str(k).strip().lower() for k in (keywords or []) if str(k).strip()]))
+    for kw in combined:
+        # 1. Metric / Number / Unit
+        if re.search(r'\d', kw) or re.search(r'(?:บาท|%|เปอร์เซ็นต์|ริกเตอร์|แมกนิจูด)', kw):
+            metrics.append(kw)
+            continue
+        # 2. Action / Predicate / Event
+        if any(act in kw for act in ACTION_KEYWORDS):
+            actions.append(kw)
+            continue
+        # 3. Entity (Person, Org, Location, Object)
+        entities.append(kw)
+
+    return entities, actions, metrics
+
+
+def _compute_relevance_score(keywords: list, query: str, title: str, snippet: str,
+                             locations: list = None, timeline: str = None) -> float:
+    """คำนวณค่าความสัมพันธ์แบบ Universal Tri-Anchor Precision (0-100%).
+
+    - 3 มิติ: Entity (ใคร/หน่วยงาน/ที่ไหน) + Action (เกิดอะไร/ทำอะไร) + Metric (ตัวเลข/ขนาด)
+    - ป้องกันการหลุดรอดของข่าวที่ติดเฉพาะชื่อคน หรือติดเฉพาะตัวเลข แต่คนละคดี/คนละเรื่อง
+    """
+    if not keywords and not query:
+        return 50.0
+
+    content = f"{title} {snippet}".lower()
+    title_lower = title.lower()
+    entities, actions, metrics = _extract_tri_anchors(keywords, query)
+    all_kws = list(dict.fromkeys(entities + actions + metrics))
+    if not all_kws:
+        all_kws = [query.lower()] if query else []
+
+    # 1. Coverage Scores
+    title_hits = sum(1 for kw in all_kws if _match_single_kw(kw, title_lower)[0])
+    title_score = 35.0 * (title_hits / len(all_kws)) if all_kws else 0.0
+
+    content_hits = sum(1 for kw in all_kws if _match_single_kw(kw, content)[0])
+    content_score = 45.0 * (content_hits / len(all_kws)) if all_kws else 0.0
+
+    query_terms = [w for w in re.findall(r'[\u0E00-\u0E7F\w]+', (query or "").lower()) if len(w) > 2]
+    q_score = 0.0
+    if query_terms:
+        q_hits = sum(1 for w in query_terms if w in content)
+        q_score = 20.0 * (q_hits / len(query_terms))
+
+    score = title_score + content_score + q_score
+
+    # 2. Dimension hit verification
+    e_hit = any(_match_single_kw(k, content)[0] for k in entities) if entities else True
+    a_hit = any(_match_single_kw(k, content)[0] for k in actions) if actions else True
+    m_hit = any(_match_single_kw(k, content)[0] for k in metrics) if metrics else True
+
+    # 3. Precision Co-occurrence & Penalties
+    # Action mismatch (e.g. Loan aid instead of Disciplinary Firing) -> Penalty
+    if actions and not a_hit:
+        score *= 0.25
+    # Entity mismatch (e.g. Earthquake in Japan instead of Sumatra Indonesia) -> Penalty
+    if entities and not e_hit:
+        score *= 0.20
+    # Full or Strong Multi-Anchor Hit Bonus
+    if (not entities or e_hit) and (not actions or a_hit):
+        if m_hit or not metrics:
+            score = min(100.0, score + 15.0)
+        else:
+            score = min(100.0, score + 5.0)
+
+    return max(0.0, min(100.0, round(score, 1)))
+
+
+def _keyword_gate_passed(keywords: list, text_content: str, title: str, pub_date: str = "ไม่ระบุ",
+                         is_trusted_domain: bool = False, fallback_query: str = "",
+                         is_emergency_fallback: bool = False) -> tuple:
+    """Precision Keyword Gate — คัดกรองข่าวขยะตั้งแต่ด่านแรก."""
+    if not keywords:
+        return True, 0
+
+    has_core, kw_score, matched_kws, has_numeric_exact = _keyword_partial_match(keywords, text_content)
+    if not has_core:
+        if fallback_query and _query_overlap_specific(fallback_query, text_content):
+            return True, 5
+        return False, 0
+
+    title_lower = title.lower()
+    title_hit = any(_match_single_kw(str(k), title_lower)[0] for k in matched_kws)
+    distinct_matched = len(set(str(k).lower() for k in matched_kws))
+
+    # มีตัวเลข exact match ในเนื้อหา
+    if has_numeric_exact:
+        return True, kw_score + 15
+    if title_hit and distinct_matched >= 1:
+        return True, kw_score + 10
+    if is_trusted_domain:
+        return True, kw_score
+    if distinct_matched >= 2:
+        return True, kw_score
+    if is_emergency_fallback and distinct_matched >= 1:
+        return True, kw_score
+
+    if fallback_query and _query_overlap_specific(fallback_query, text_content):
+        return True, kw_score + 5
+    return False, 0
+
+
+def _filter_serper_results(raw_results, core_keywords, timeline, locations,
+                           clean_source_url, urls_seen, blacklisted_domains_or_set, trusted_media,
+                           search_query="", is_emergency_fallback=False,
+                           min_relevance_pct: float = 50.0,
+                           is_domain_blocked_fn=None):
+    """Filter Serper/Google results — credibility gate + relevance gate + Tiered Trust.
+
+    ต่างจาก Exa filter เพราะ:
+    - ผลมาจาก Google ทั้ง internet → ต้องตรวจ domain credibility
+    - snippet สั้น (~160 chars) → ให้น้ำหนัก title มากกว่า
+    - เว็บนอก Whitelist ยังผ่านได้เป็น Tier 2 (Open Web) ถ้าเนื้อหาตรง
+    """
+    filtered = []
+    trusted_media_set = set(trusted_media) if not isinstance(trusted_media, set) else trusted_media
+    factcheck_domains = {'antifakenewscenter.com', 'sure.factcheckthailand.org', 'cofact.org'}
+
+    # ถ้าไม่แพส์ fn ให้ → fallback: exact match กับ blacklisted list
+    def _blocked(dom):
+        if is_domain_blocked_fn is not None:
+            return is_domain_blocked_fn(dom)
+        bl_set = blacklisted_domains_or_set if isinstance(blacklisted_domains_or_set, (set, frozenset)) else set(blacklisted_domains_or_set)
+        if dom in bl_set:
+            return True
+        for bl in bl_set:
+            if dom.endswith('.' + bl):
+                return True
+        return False
+
+    spam_indicators = [
+        'slot', 'casino', 'bet365', 'poker', 'pgslot', 'joker123',
+        'ufa', 'gambling', 'porn', 'xxx', 'sexy', 'เว็บพนัน',
     ]
-    for reason, predicate, score_margin in special_groups:
-        candidate = next(
-            (
-                item for item in scored_results
-                if predicate(item) and item["relevance_score"] >= top_score - score_margin
-            ),
-            None,
+
+    for item in raw_results:
+        title = item.get("title", "").strip() or "ข่าวที่เกี่ยวข้อง"
+        link = item.get("url", "")
+        snippet = item.get("text", "")[:500]
+        pub_date = item.get("publishedDate", "ไม่ระบุ")
+
+        if not link:
+            continue
+
+        parsed_url = urlparse(link.lower())
+        domain = parsed_url.netloc.replace('www.', '')
+        link_clean = link.lower().split('?')[0].rstrip('/')
+
+        if re.search(r'\.(pdf|doc|docx|xls|xlsx|ppt|pptx)($|\?)', link.lower()):
+            continue
+        if '[pdf]' in title.lower() or 'pdf' in title.lower():
+            continue
+        if clean_source_url and clean_source_url == link_clean:
+            continue
+        if link in urls_seen:
+            continue
+        if _blocked(domain):
+            continue
+
+        # ตรวจ spam keyword ใน title (ไม่ใช่ domain แล้ว)
+        if any(s in title.lower() for s in ['porn', 'xxx', 'sexy', 'เว็บพนัน']):
+            continue
+
+        # ⏰ ข่าวปีก่อน (ปีเก่าจริง) → เตะทิ้ง; ข่าวเดือนเก่าในปีเดียวกัน → ลดคะแนน
+        if _ref_too_old(pub_date, _max_ref_age_days()):
+            continue
+
+        is_factcheck = domain in factcheck_domains
+        is_gov = domain.endswith('.go.th') or domain.endswith('.gov')
+        is_tier1 = domain in trusted_media_set
+
+        text_content = (title + " " + snippet).lower()
+        match_score = 0
+
+        # ⚠️ ด่านแก่นเรื่อง (Task 6): ต้อง title hit หรือ >=2 คำ หรือ trusted domain
+        # หรือ numeric exact 1 คำ หรือ emergency fallback (1 คำก็ผ่าน)
+        gate_pass, gate_score = _keyword_gate_passed(
+            core_keywords, text_content, title, pub_date=pub_date,
+            is_trusted_domain=(is_gov or is_factcheck),
+            fallback_query=search_query,
+            is_emergency_fallback=is_emergency_fallback,
         )
-        if candidate:
-            add_candidate(candidate, reason)
-
-    for candidate in scored_results:
-        add_candidate(candidate, "ranked_relevance")
-        if len(selected_urls) >= limit:
-            break
-
-    for candidate in scored_results:
-        if candidate["href"] not in selected_urls and domain_counts.get(candidate["source_domain"], 0) >= 2:
-            excluded_counts["domain_limit"] += 1
-
-    selected = [item for item in scored_results if item["href"] in selected_urls]
-    for item in selected:
-        item["selection_reasons"] = selected_reasons[item["href"]]
-    return selected
-
-
-def _process_results(raw_candidates, clean_query, locations, core_keywords, target_year, num_results, source_url):
-    clean_source_url = canonicalize_url(source_url)
-    merged_by_url = {}
-    excluded_counts = {
-        "missing_url": 0,
-        "source_url": 0,
-        "blacklisted": 0,
-        "document": 0,
-        "not_article": 0,
-        "not_relevant": 0,
-        "not_direct_evidence": 0,
-        "duplicate": 0,
-        "domain_limit": 0,
-    }
-
-    for candidate in raw_candidates:
-        canonical_url = canonicalize_url(candidate.get("href", ""))
-        if not canonical_url:
-            excluded_counts["missing_url"] += 1
+        if not gate_pass:
             continue
-        if clean_source_url and canonical_url == clean_source_url:
-            excluded_counts["source_url"] += 1
-            continue
-        if _is_blocklisted(canonical_url):
-            excluded_counts["blacklisted"] += 1
-            continue
-        candidate["href"] = canonical_url
-        if _is_document_result(
-            canonical_url, candidate.get("title", ""), candidate.get("snippet", "")
-        ):
-            excluded_counts["document"] += 1
-            continue
-        if not is_actual_article(
-            canonical_url, candidate.get("title", ""), candidate.get("snippet", "")
-        ):
-            excluded_counts["not_article"] += 1
-            continue
-        if canonical_url in merged_by_url:
-            excluded_counts["duplicate"] += 1
-            _merge_duplicate(merged_by_url[canonical_url], candidate)
-            continue
-        merged_by_url[canonical_url] = candidate
+        match_score += gate_score
+        match_score += _ref_age_penalty(pub_date, _max_ref_age_days())
 
-    scored_results = []
-    for candidate in merged_by_url.values():
-        scored = _score_candidate(candidate, clean_query, locations, core_keywords, target_year)
-        if scored is None:
-            reason = candidate.pop("_rejection_reason", "not_relevant")
-            excluded_counts[reason] = excluded_counts.get(reason, 0) + 1
-            continue
-        scored_results.append(scored)
-
-    scored_results.sort(key=lambda item: (
-        -item["relevance_score"],
-        -len(item["providers"]),
-        item["source_tier"],
-        min(item["provider_ranks"].values(), default=99),
-        item["href"],
-    ))
-
-    diverse_results = _select_diverse_results(scored_results, num_results, excluded_counts)
-
-    return diverse_results, excluded_counts, len(merged_by_url), len(scored_results)
-
-
-def _serper_enrich_limit() -> int:
-    # Disabled by default: live measurements showed no extra content for some
-    # sites while adding multiple seconds. Backends can opt in to quality mode.
-    raw_value = os.getenv("SERPER_ENRICH_LIMIT", "0").strip()
-    try:
-        value = int(raw_value)
-    except ValueError:
-        value = 4
-    return min(8, max(0, value))
-
-
-def _enrich_serper_only_references(references, exa_api_key, timeout):
-    """Add bounded article text to high-ranked Serper-only results in one request."""
-    limit = _serper_enrich_limit()
-    targets = [
-        reference for reference in references
-        if reference.get("providers") == ["serper"]
-    ][:limit]
-    diagnostic = {
-        "configured": bool(exa_api_key),
-        "attempted": bool(exa_api_key and targets),
-        "status": "not_needed",
-        "requested": len(targets),
-        "enriched": 0,
-        "elapsed_seconds": 0.0,
-        "error": None,
-    }
-    if not targets:
-        return diagnostic
-    if not exa_api_key:
-        diagnostic["status"] = "not_configured"
-        return diagnostic
-
-    started = time.perf_counter()
-    try:
-        data = fetch_exa_contents(
-            [target["href"] for target in targets],
-            exa_api_key,
-            timeout=min(5.0, timeout),
+        # Relevance Score (0-100%): บังคับ ≥ min_relevance_pct
+        relevance_pct = _compute_relevance_score(
+            core_keywords, search_query, title, snippet, locations, timeline
         )
-        content_by_url = {}
-        for item in data.get("results", []):
-            if not isinstance(item, dict):
-                continue
-            content = str(item.get("text") or "").strip()[:MAX_SNIPPET_CHARACTERS]
-            if not content:
-                continue
-            for url_value in (item.get("url"), item.get("id")):
-                canonical_url = canonicalize_url(url_value)
-                if canonical_url:
-                    content_by_url[canonical_url] = content
-
-        for target in targets:
-            content = content_by_url.get(canonicalize_url(target["href"]))
-            if not content:
-                continue
-            target["snippet"] = content
-            target["content_source"] = "exa_contents"
-            diagnostic["enriched"] += 1
-        diagnostic["status"] = "success"
-    except Exception as error:  # optional hydration must not discard valid search results
-        diagnostic["status"] = "error"
-        diagnostic["error"] = _safe_error_code(error)
-    diagnostic["elapsed_seconds"] = round(time.perf_counter() - started, 3)
-    return diagnostic
-
-
-def hydrate_references_with_jina(
-    references: list[dict], max_results: int = 6, budget_seconds: float = 3.0
-) -> dict:
-    """Best-effort full-text hydration for thin HTML evidence without reordering IDs."""
-    enabled = os.getenv("ENABLE_JINA_HYDRATION", "1").strip().lower() not in {"0", "false", "no"}
-    targets = [
-        reference for reference in references
-        if (
-            len(str(reference.get("snippet", ""))) < 1200
-            or reference.get("content_source") == "serper_snippet"
-        )
-        and not _is_document_result(
-            reference.get("href", ""), reference.get("title", ""), reference.get("snippet", "")
-        )
-    ][:max(0, int(max_results))]
-    diagnostic = {
-        "enabled": enabled,
-        "attempted": False,
-        "status": "not_needed",
-        "requested": len(targets),
-        "hydrated": 0,
-        "elapsed_seconds": 0.0,
-        "errors": [],
-    }
-    if not enabled or not targets or budget_seconds < 0.5:
-        diagnostic["status"] = "disabled" if not enabled else "skipped_budget" if targets else "not_needed"
-        return diagnostic
-
-    diagnostic["attempted"] = True
-    started = time.perf_counter()
-    timeout = min(3.0, max(0.5, float(budget_seconds)))
-
-    def hydrate(reference):
-        request_started = time.perf_counter()
-        try:
-            response = get_session().get(
-                f"https://r.jina.ai/{reference['href']}",
-                headers={"Accept": "text/plain", "X-Retain-Images": "none"},
-                timeout=split_timeout(timeout),
-            )
-            response.raise_for_status()
-            content = str(response.text or "")
-            content = re.sub(r"!\[[^\]]*\]\([^)]*\)", " ", content)
-            content = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", content)
-            content = re.sub(r"\s+", " ", content).strip()[:3000]
-            if len(content) < 200:
-                return reference, None, time.perf_counter() - request_started, "EMPTY_CONTENT"
-            return reference, content, time.perf_counter() - request_started, None
-        except Exception as error:
-            return reference, None, time.perf_counter() - request_started, _safe_error_code(error)
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(6, len(targets))) as executor:
-        futures = [executor.submit(hydrate, reference) for reference in targets]
-        for future in concurrent.futures.as_completed(futures):
-            reference, content, elapsed, error_code = future.result()
-            if error_code:
-                diagnostic["errors"].append(error_code)
-                continue
-            if len(content) > len(str(reference.get("snippet", ""))):
-                reference["snippet_original_length"] = len(str(reference.get("snippet", "")))
-                reference["snippet"] = content
-                reference["content_source"] = "jina_reader"
-                reference["hydration_seconds"] = round(elapsed, 3)
-                diagnostic["hydrated"] += 1
-
-    diagnostic["elapsed_seconds"] = round(time.perf_counter() - started, 3)
-    if diagnostic["hydrated"]:
-        diagnostic["status"] = "success"
-    elif diagnostic["errors"]:
-        diagnostic["status"] = "error"
-    else:
-        diagnostic["status"] = "no_improvement"
-    return diagnostic
-
-
-def rerank_references_for_analysis(references: list[dict], claim: str, limit: int = 8) -> tuple[list[dict], dict]:
-    """Fast lexical/provenance reranker that reduces analyzer context without another model call."""
-    started = time.perf_counter()
-    claim_terms = set(_meaningful_terms(claim))
-    ranked = []
-    tier_bonus = {"A": 12, "B": 9, "C": 5, "D": 6, "E": 0}
-    for original_rank, reference in enumerate(references, start=1):
-        text = f"{reference.get('title', '')} {reference.get('snippet', '')}"
-        reference_terms = set(_meaningful_terms(text))
-        overlap = claim_terms & reference_terms
-        coverage = len(overlap) / max(1, len(claim_terms))
-        score = float(reference.get("relevance_score", 0))
-        score += min(28.0, coverage * 28.0)
-        score += tier_bonus.get(str(reference.get("source_tier", "E")), 0)
-        score += min(8, len(reference.get("direct_evidence_signals", [])) * 4)
-        score += min(6, len(reference.get("authority_topic_matches", [])) * 3)
-        score += 3 if len(str(reference.get("snippet", ""))) >= 800 else 0
-        reference["rerank_score"] = round(score, 3)
-        reference["rerank_matched_terms"] = sorted(overlap)[:12]
-        reference["retrieval_rank"] = original_rank
-        ranked.append(reference)
-
-    ranked.sort(key=lambda item: (
-        -item["rerank_score"],
-        item.get("retrieval_rank", 999),
-        item.get("href", ""),
-    ))
-    selected = []
-    domain_counts = {}
-    for reference in ranked:
-        domain = reference.get("source_domain", "")
-        if domain_counts.get(domain, 0) >= 2:
+        # Emergency mode: ลดเกณฑ์ลงเล็กน้อยเพื่อให้ได้ refs มากพอ
+        actual_threshold = min_relevance_pct if not is_emergency_fallback else max(30.0, min_relevance_pct - 20)
+        # Tier 0/1: ลดเกณฑ์เพราะผ่าน credibility check แล้ว
+        if is_gov or is_factcheck or is_tier1:
+            actual_threshold = max(35.0, actual_threshold - 20)
+        # Open Web (Tier 2):
+        else:
+            actual_threshold = max(40.0, actual_threshold - 15)
+        
+        if relevance_pct < actual_threshold:
             continue
-        domain_counts[domain] = domain_counts.get(domain, 0) + 1
-        selected.append(reference)
-        if len(selected) >= max(1, int(limit)):
-            break
-    return selected, {
-        "input_count": len(references),
-        "output_count": len(selected),
-        "elapsed_seconds": round(time.perf_counter() - started, 3),
-        "method": "thai_token_overlap_plus_provenance",
-    }
+        match_score += int(relevance_pct)  # น้ำหนักเข้มงวด: relevance สูง = คะแนนสูง
 
+        if locations:
+            if any(loc.lower() in text_content for loc in locations):
+                match_score += 20
 
-def _safe_error_code(error: Exception) -> str:
-    if isinstance(error, requests.Timeout):
-        return "TIMEOUT"
-    if isinstance(error, requests.HTTPError):
-        response = getattr(error, "response", None)
-        status_code = getattr(response, "status_code", None)
-        return f"HTTP_{status_code}" if status_code else "HTTP_ERROR"
-    if isinstance(error, requests.RequestException):
-        return "NETWORK_ERROR"
-    if isinstance(error, ValueError):
-        return "INVALID_RESPONSE"
-    return type(error).__name__
+        if timeline:
+            try:
+                ty_th = str(timeline).strip()
+                ty_en = str(int(ty_th) - 543)
+                has_timeline = ty_th in text_content or ty_en in text_content
+                is_current_year = int(ty_th) == datetime.now().year + 543
+                years_in_text = re.findall(r'\b(25\d{2}|20\d{2})\b', text_content)
+                # ข่าวปีปัจจุบัน + มีปีเก่าชัดเจนในข้อความ + ไม่มี publishedDate → เตะ
+                if years_in_text and not has_timeline and is_current_year:
+                    old_years = [y for y in years_in_text
+                                 if (int(y) < int(ty_th) and int(y) > 2500)
+                                 or (int(y) < int(ty_en) and int(y) > 2000)]
+                    if old_years:
+                        continue
+                if has_timeline:
+                    match_score += 20
+            except Exception:
+                pass
 
+        tier = 2  # Open Web / Niche / Independent / Foreign Media (Tier 2)
+        if is_factcheck:
+            tier = 0
+            match_score += 30
+        elif is_gov:
+            tier = 0
+            match_score += 20
+        elif is_tier1:
+            tier = 1
+            match_score += 10
 
-def _new_provider_status(configured: bool, request_count: int) -> dict:
-    return {
-        "configured": configured,
-        "attempted": bool(configured and request_count),
-        "status": "pending" if configured else "not_configured",
-        "request_count": request_count,
-        "successful_requests": 0,
-        "failed_requests": 0,
-        "optional_request_count": 0,
-        "optional_successful_requests": 0,
-        "optional_failed_requests": 0,
-        "raw_result_count": 0,
-        "elapsed_seconds": 0.0,
-        "errors": [],
-        "request_details": [],
-    }
-
-
-def _adaptive_search_enabled() -> bool:
-    return os.getenv("ENABLE_ADAPTIVE_SEARCH", "1").strip().lower() not in {"0", "false", "no"}
-
-
-def search_news_references_with_diagnostics(
-    query: str,
-    locations: list,
-    core_keywords: list,
-    target_year: str,
-    num_results: int = 10,
-    source_url: str = "",
-    deadline_seconds: float = None,
-    allow_adaptive: bool | None = None,
-) -> dict:
-    """Search both providers and return references plus machine-readable status."""
-    total_started = time.perf_counter()
-    clean_query = str(query or "").replace('"', "").replace("'", "").strip()
-    adaptive_enabled = _adaptive_search_enabled() if allow_adaptive is None else bool(allow_adaptive)
-    if not clean_query or clean_query == "SKIP_SEARCH":
-        return {
-            "status": "SKIPPED",
-            "completed": clean_query == "SKIP_SEARCH",
-            "full_provider_coverage": False,
-            "references": [],
-            "provider_status": {},
-            "content_enrichment": {
-                "configured": False, "attempted": False, "status": "not_needed",
-                "requested": 0, "enriched": 0, "elapsed_seconds": 0.0, "error": None,
-            },
-            "adaptive_search": {
-                "enabled": adaptive_enabled, "attempted": False,
-                "status": "not_needed", "trigger": None, "raw_result_count": 0,
-                "elapsed_seconds": 0.0, "error": None,
-            },
-            "counts": {"raw": 0, "deduplicated": 0, "relevant": 0, "returned": 0},
-            "query_plan": [],
-            "excluded_counts": {},
-            "elapsed_seconds": round(time.perf_counter() - total_started, 3),
-        }
-
-    exa_api_key = _get_api_key("EXA_API_KEY")
-    serper_api_key = _get_api_key("SERPER_API_KEY")
-    timeout = _search_timeout_seconds()
-    if deadline_seconds is not None:
-        timeout = min(timeout, max(2.0, float(deadline_seconds)))
-    enhanced_query = _compose_enhanced_query(clean_query, core_keywords, locations)
-
-    exa_official_payload = {
-        "query": enhanced_query,
-        "type": "fast",
-        "numResults": 20,
-        "includeDomains": list(dict.fromkeys([
-            "go.th", "*.go.th", "ac.th", "*.ac.th",
-            *FACT_CHECK_DOMAINS,
-            *FOREIGN_GOVERNMENT_DOMAINS,
-            *INTERNATIONAL_ORGANIZATION_DOMAINS,
-            *REGULATORY_ORGANIZATION_DOMAINS,
-        ])),
-        "contents": {
-            "highlights": True,
-            "text": {"maxCharacters": MAX_SNIPPET_CHARACTERS},
-        },
-    }
-    exa_media_payload = {
-        "query": clean_query,
-        "type": "fast",
-        "numResults": 30,
-        "includeDomains": TRUSTED_MEDIA_DOMAINS,
-        "contents": {
-            "highlights": True,
-            "text": {"maxCharacters": MAX_SNIPPET_CHARACTERS},
-        },
-    }
-    serper_payload = {
-        # Keep the domain-restricted query compact: Serper/Google rejected
-        # longer formal-synonym expansions combined with the site operator.
-        "q": f"{clean_query} site:go.th",
-        "gl": "th",
-        "hl": "th",
-        "num": 10,
-    }
-    serper_verify_payload = {
-        "q": build_verification_query(clean_query),
-        "gl": "th",
-        "hl": "th",
-        "num": 20,
-    }
-    serper_news_payload = {
-        "q": clean_query,
-        "gl": "th",
-        "hl": "th",
-        "num": 20,
-    }
-    query_plan = [
-        {"provider": "exa", "kind": "official", "query": enhanced_query, "configured": bool(exa_api_key)},
-        {"provider": "exa", "kind": "media", "query": clean_query, "configured": bool(exa_api_key)},
-        {"provider": "serper", "kind": "official", "query": serper_payload["q"], "configured": bool(serper_api_key)},
-        {
-            "provider": "serper", "kind": "verification",
-            "query": serper_verify_payload["q"], "configured": bool(serper_api_key),
-        },
-    ]
-    if adaptive_enabled:
-        query_plan.append({
-            "provider": "serper", "kind": "news",
-            "query": serper_news_payload["q"], "configured": bool(serper_api_key),
+        urls_seen.add(link)
+        filtered.append({
+            'title': title,
+            'href': link,
+            'pub_date': pub_date[:10] if pub_date != "ไม่ระบุ" else pub_date,
+            'snippet': snippet,
+            'tier': tier,
+            'match_score': match_score,
+            'relevance_pct': relevance_pct,
+            'source': 'serper',
         })
 
-    tasks = []
-    if exa_api_key:
-        tasks.extend([
-            ("exa", "official", fetch_exa_api, exa_official_payload, exa_api_key),
-            ("exa", "media", fetch_exa_api, exa_media_payload, exa_api_key),
-        ])
-    if serper_api_key:
-        tasks.extend([
-            ("serper", "official", fetch_serper_api, serper_payload, serper_api_key),
-            ("serper", "verification", fetch_serper_api, serper_verify_payload, serper_api_key),
-        ])
-        if adaptive_enabled:
-            tasks.append(
-                ("serper", "news", fetch_serper_news, serper_news_payload, serper_api_key)
-            )
+    return filtered
 
-    provider_status = {
-        "exa": _new_provider_status(bool(exa_api_key), 2 if exa_api_key else 0),
-        "serper": _new_provider_status(
-            bool(serper_api_key),
-            (2 + int(adaptive_enabled)) if serper_api_key else 0,
-        ),
-    }
-    raw_candidates = []
 
-    def execute_task(provider, query_kind, function, payload, api_key):
-        started = time.perf_counter()
+def _build_channel_queries(clean_query: str, core_keywords: list, core_keywords_formal: list = None, exact_quote: str = "") -> tuple:
+    """Build channel-specific queries.
+
+    - clean_query (topic_keywords) is already a simulated headline phrase from the LLM.
+    - Exa Gov: uses formal keywords if available, else clean_query.
+    - Exa Media: uses exact quote or colloquial semantic phrase.
+    - Serper Web: uses clean_query.
+    - Serper News: uses punchy entity cluster (top core keywords) for highest news recall.
+    """
+    formal_kws = [k for k in (core_keywords_formal or []) if k]
+    exa_gov_query = " ".join(formal_kws[:3]) if formal_kws else clean_query
+    
+    exa_media_query = exact_quote if exact_quote and len(exact_quote.split()) >= 4 else clean_query
+
+    serper_query = clean_query
+    
+    # News tab works best with punchy 2-4 core keywords
+    kw_punchy = " ".join((core_keywords or [])[:4]).strip()
+    serper_news_query = kw_punchy if kw_punchy and len(kw_punchy) >= 4 else clean_query
+
+    return exa_gov_query, exa_media_query, serper_query, serper_news_query
+
+
+def search_news_references(query: str, locations: list, core_keywords: list, timeline: str, num_results: int = 20, source_url: str = "", timeout: float = 25, core_keywords_formal: list = None, content_type: str = "NEWS_CLAIM", exact_quote: str = "") -> list:
+    if not query.strip() or query == "SKIP_SEARCH": return []
+
+    # สองกลุ่มคีย์เวิร์ด: colloquial (คำพูด/ชื่อคน/ตัวเลข) + formal (คำราชการ/นโยบาย)
+    # ใช้แยกช่องทางค้นหาให้ตรงภาษาของแต่ละช่องทาง และใช้รวมกันตอน filter
+    core_keywords_formal = [k for k in (core_keywords_formal or []) if k]
+    core_keywords = [k for k in (core_keywords or []) if k]
+    all_keywords = list(dict.fromkeys(core_keywords + core_keywords_formal))
+    
+    exa_api_key = os.getenv("EXA_API_KEY", "").strip()
+    if not exa_api_key:
         try:
-            results = function(payload, api_key, timeout=timeout)
-            return provider, query_kind, results, time.perf_counter() - started, None
-        except Exception as error:  # convert provider failures into safe diagnostics
-            return provider, query_kind, [], time.perf_counter() - started, error
+            import streamlit as st
+            exa_api_key = st.secrets.get("EXA_API_KEY", "").strip()
+        except Exception: pass
 
-    if tasks:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(tasks)) as executor:
-            future_map = {
-                executor.submit(execute_task, *task): (task[0], task[1])
-                for task in tasks
-            }
-            for future in concurrent.futures.as_completed(future_map):
-                provider, query_kind = future_map[future]
-                try:
-                    _, _, results, elapsed, error = future.result()
-                    provider_status[provider]["elapsed_seconds"] = max(
-                        provider_status[provider]["elapsed_seconds"], elapsed
-                    )
-                    if error is not None:
-                        error_code = _safe_error_code(error)
-                        provider_status[provider]["failed_requests"] += 1
-                        provider_status[provider]["errors"].append(error_code)
-                        provider_status[provider]["request_details"].append({
-                            "kind": query_kind, "status": "error",
-                            "elapsed_seconds": round(elapsed, 3), "error": error_code,
-                            "raw_result_count": 0,
-                        })
-                        continue
-                    provider_status[provider]["successful_requests"] += 1
-                    provider_status[provider]["raw_result_count"] += len(results)
-                    provider_status[provider]["request_details"].append({
-                        "kind": query_kind, "status": "success",
-                        "elapsed_seconds": round(elapsed, 3), "error": None,
-                        "raw_result_count": len(results),
-                    })
-                    if provider == "exa":
-                        raw_candidates.extend(_normalize_exa_results(results, query_kind))
-                    else:
-                        raw_candidates.extend(_normalize_serper_results(results, query_kind))
-                except Exception as error:  # provider boundary: diagnostics must survive any client failure
-                    error_code = _safe_error_code(error)
-                    provider_status[provider]["failed_requests"] += 1
-                    provider_status[provider]["errors"].append(error_code)
-                    provider_status[provider]["request_details"].append({
-                        "kind": query_kind, "status": "error",
-                        "elapsed_seconds": 0.0, "error": error_code,
-                        "raw_result_count": 0,
-                    })
+    serper_api_key = os.getenv("SERPER_API_KEY", "").strip()
+    if not serper_api_key:
+        try:
+            import streamlit as st
+            if "SERPER_API_KEY" in st.secrets:
+                serper_api_key = st.secrets["SERPER_API_KEY"].strip()
+        except Exception: pass
 
-    initial_successful_requests = sum(
-        status["successful_requests"] for status in provider_status.values()
-    )
-    adaptive_search = {
-        "enabled": adaptive_enabled,
-        "attempted": False,
-        "status": "not_needed",
-        "trigger": None,
-        "raw_result_count": 0,
-        "elapsed_seconds": 0.0,
-        "error": None,
+    if not exa_api_key and not serper_api_key:
+        logger.error("No search API key found (EXA / SERPER)")
+        return []
+
+    clean_query = query.replace('"', '').replace("'", "")
+    clean_source_url = source_url.split('?')[0].rstrip('/').lower() if source_url else ""
+
+    # ─── Tier 0: หน่วยงานรัฐ + ศูนย์ตรวจสอบข่าวลวง ───────────────────────────
+    # (Exa Gov payload ใช้ includeDomains ซึ่งครอบคลุม .go.th ทั้งหมดอยู่แล้ว)
+    factcheck_domains = [
+        'antifakenewscenter.com', 'sure.factcheckthailand.org', 'cofact.org',
+    ]
+
+    # ─── Tier 1: สื่อหลักไทย + สำนักข่าวต่างประเทศที่รายงานข่าวไทย ─────────────
+    # ใช้สำหรับ: เพิ่มคะแนนความน่าเชื่อถือ (Trust Score Boost)
+    # ไม่ใช่ประตูปิดกั้น — เว็บข่าวทั่วไปที่อยู่นอกรายการนี้ยังสามารถผ่านเข้ามาเป็น Tier 2 ได้
+    tier1_media = [
+        # สื่อโทรทัศน์/วิทยุหลักของรัฐ
+        'thaipbs.or.th', 'mcot.net', 'tna.mcot.net', 'nbtworld.prd.go.th',
+        # สื่อโทรทัศน์เอกชนหลัก
+        'pptvhd36.com', 'ch7.com', 'news.ch7.com', 'ch3plus.com', '3plusnews.com',
+        'one31.net', 'amarintv.com', 'nationtv.tv', 'tnnthailand.com', 'springnews.co.th',
+        'workpointtoday.com', 'thaich8.com', 'trueid.net',
+        # สื่อพิมพ์/ออนไลน์ใหญ่
+        'thairath.co.th', 'khaosod.co.th', 'matichon.co.th', 'dailynews.co.th',
+        'thaipost.net', 'komchadluek.net', 'naewna.com', 'siamrath.co.th',
+        'bangkokpost.com', 'nationthailand.com', 'khaosodenglish.com',
+        # สื่อเศรษฐกิจ/ธุรกิจ
+        'bangkokbiznews.com', 'prachachat.net', 'thansettakij.com', 'posttoday.com',
+        'mgronline.com', 'moneyandbanking.co.th', 'efinancethai.com',
+        # สื่อออนไลน์อิสระที่น่าเชื่อถือ
+        'prachatai.com', 'isranews.org', 'thestandard.co', 'thematter.co', 'the101.world',
+        'thaipublica.org', 'voicetv.co.th',
+        # พอร์ทัลข่าวออนไลน์ยอดนิยม
+        'sanook.com', 'kapook.com', 'today.line.me', 'livenews365.com',
+        'thethaiger.com', 'aseannow.com',
+        # สื่อท้องถิ่น/ภูมิภาค
+        'chiangmainews.co.th', 'phuketnews.com', 'siamnews.com',
+        # ─── สำนักข่าวต่างประเทศระดับโลกที่รายงานข่าวไทย/เอเชีย ─────────────────
+        'bbc.com', 'bbc.co.uk',                           # BBC
+        'reuters.com',                                     # Reuters
+        'apnews.com',                                      # AP News
+        'bloomberg.com',                                   # Bloomberg
+        'channelnewsasia.com', 'cna.asia',                 # Channel News Asia (CNA)
+        'asia.nikkei.com', 'nikkei.com',                   # Nikkei Asia
+        'scmp.com',                                        # South China Morning Post
+        'aljazeera.com',                                   # Al Jazeera
+        'voanews.com', 'voathai.com',                      # VOA
+        'dw.com',                                          # Deutsche Welle
+        'rfi.fr',                                          # RFI
+        'afp.com',                                         # AFP
+        'straitstimes.com',                                # Straits Times
+        'bangkokbiznews.com',                              # (ซ้ำ — ป้องกัน)
+        'theguardian.com',                                 # The Guardian (เมื่อรายงานข่าวไทย)
+        'washingtonpost.com',                              # Washington Post
+        'nytimes.com',                                     # NYT
+        # ─── องค์กรระหว่างประเทศ / สถาบันวิจัย ───────────────────────────────────
+        'un.org', 'who.int', 'worldbank.org', 'imf.org', 'unesco.org',
+        'tdri.or.th', 'nesdc.go.th', 'nso.go.th',
+    ]
+    # ใช้ set เพื่อ lookup เร็ว
+    tier1_media_set = set(tier1_media)
+    factcheck_set = set(factcheck_domains)
+
+    # ─── Whitelist Exception List ─────────────────────────────────────────────
+    # โดเมนเหล่านี้มีสิทธิ์เหนือ Blacklist เสมอ (Whitelist Priority)
+    # ป้องกัน substring-match ของ Blacklist เหมารวม subdomain ที่ถูกต้อง
+    whitelist_exceptions = {
+        'today.line.me',    # LINE TODAY — สำนักข่าวออนไลน์ aggregate
+        'liff.line.me',     # LINE LIFF article links
+        'news.line.me',     # LINE News portal
     }
-    if initial_successful_requests > 0:
-        preliminary_refs, _, _, _ = _process_results(
-            raw_candidates, clean_query, locations, core_keywords, target_year,
-            num_results, source_url,
-        )
-        top_score = preliminary_refs[0]["relevance_score"] if preliminary_refs else 0
-        preliminary_domains = {
-            reference.get("source_domain") for reference in preliminary_refs
-            if reference.get("source_domain")
-        }
-        needs_second_wave = (
-            len(preliminary_refs) < 8
-            or len(preliminary_domains) < 3
-            or top_score < 45
-        )
-        deadline_allows = (
-            deadline_seconds is None
-            or (deadline_seconds - (time.perf_counter() - total_started)) >= 2.0
-        )
-        if adaptive_enabled and serper_api_key and needs_second_wave and deadline_allows:
-            adaptive_search["attempted"] = True
-            if len(preliminary_refs) < 8:
-                adaptive_search["trigger"] = "low_result_count"
-            elif len(preliminary_domains) < 3:
-                adaptive_search["trigger"] = "low_publisher_diversity"
-            else:
-                adaptive_search["trigger"] = "low_top_score"
-            broad_payload = {"q": enhanced_query, "gl": "th", "hl": "th", "num": 20}
-            query_plan.append({
-                "provider": "serper", "kind": "broad", "query": enhanced_query,
-                "configured": True,
-            })
-            provider_status["serper"]["optional_request_count"] += 1
-            started = time.perf_counter()
-            try:
-                broad_results = fetch_serper_api(
-                    broad_payload, serper_api_key, timeout=min(timeout, 4.0)
-                )
-                elapsed = time.perf_counter() - started
-                normalized_broad = _normalize_serper_results(broad_results, "broad")
-                raw_candidates.extend(normalized_broad)
-                provider_status["serper"]["optional_successful_requests"] += 1
-                provider_status["serper"]["raw_result_count"] += len(broad_results)
-                provider_status["serper"]["elapsed_seconds"] = max(
-                    provider_status["serper"]["elapsed_seconds"], elapsed
-                )
-                provider_status["serper"]["request_details"].append({
-                    "kind": "broad", "status": "success",
-                    "elapsed_seconds": round(elapsed, 3), "error": None,
-                    "raw_result_count": len(broad_results),
-                })
-                adaptive_search.update({
-                    "status": "success", "raw_result_count": len(broad_results),
-                    "elapsed_seconds": round(elapsed, 3),
-                })
-            except Exception as error:
-                elapsed = time.perf_counter() - started
-                error_code = _safe_error_code(error)
-                provider_status["serper"]["optional_failed_requests"] += 1
-                provider_status["serper"]["errors"].append(error_code)
-                provider_status["serper"]["request_details"].append({
-                    "kind": "broad", "status": "error",
-                    "elapsed_seconds": round(elapsed, 3), "error": error_code,
-                    "raw_result_count": 0,
-                })
-                adaptive_search.update({
-                    "status": "error", "elapsed_seconds": round(elapsed, 3),
-                    "error": error_code,
-                })
-        elif needs_second_wave and not deadline_allows:
-            adaptive_search.update({"status": "skipped_deadline", "trigger": "deadline"})
 
-    for status in provider_status.values():
-        if not status["configured"]:
+    # ─── Blacklist: กรองเฉพาะ Spam / แพลตฟอร์มวิดีโอ / โซเชียล / เว็บพนัน ────
+    # ⚠️ ใช้ EXACT domain matching เท่านั้น ห้าม substring เพื่อป้องกันการเหมารวม
+    blacklisted_exact = {
+        'youtube.com', 'youtu.be', 'tiktok.com',
+        'facebook.com', 'fb.com', 'instagram.com',
+        'x.com', 'twitter.com',
+        'vimeo.com', 'dailymotion.com',
+        'line.me',           # แชท LINE ส่วนตัว (ไม่ใช่ today.line.me)
+        'blockdit.com', 'pantip.com',
+        'wikipedia.org', 'wiktionary.org', 'longdo.com', 'thai-language.com',
+        'pinterest.com', 'reddit.com', 'quora.com',
+        # เว็บ .go.th SEO ขยะ
+        'npnt.prd.go.th', 'app.mhs-pao.go.th', 'portal.disaster.go.th',
+        'office.phatthalung2.go.th', 'fossil.dmr.go.th',
+    }
+    spam_keywords_in_domain = [
+        'slot', 'casino', 'bet365', 'poker', 'pgslot', 'joker123',
+        'ufa', 'bangkokviews', 'gambling',
+    ]
+
+    def _is_domain_blocked(dom: str) -> bool:
+        """ตรวจสอบ Blacklist ด้วย Whitelist Exception Priority:
+        1. ถ้าอยู่ใน whitelist_exceptions → ไม่บล็อกเด็ดขาด
+        2. ถ้า exact match กับ blacklisted_exact → บล็อก
+        3. ถ้ามีคีย์เวิร์ดสแปมใน domain → บล็อก
+        """
+        if dom in whitelist_exceptions:
+            return False  # Whitelist has priority!
+        if dom in blacklisted_exact:
+            return True
+        # ตรวจ subdomain: e.g. 'm.facebook.com', 'static.youtube.com'
+        for bl in blacklisted_exact:
+            if dom.endswith('.' + bl):
+                return True
+        for kw in spam_keywords_in_domain:
+            if kw in dom:
+                return True
+        return False
+
+    # backward-compat alias (ใช้ใน _filter_serper_results)
+    trusted_media = tier1_media
+
+    # แยก query ตามช่องทาง: gov ใช้คำทางการ, media ใช้คำพูดทั่วไป, serper ใช้ exact keyword, news ใช้ punchy entities
+    exa_gov_query, exa_media_query, serper_query, serper_news_query = _build_channel_queries(
+        clean_query, core_keywords, core_keywords_formal=core_keywords_formal, exact_quote=exact_quote
+    )
+    
+    # useAutoprompt=False: ปิด LLM query-rewrite ฝั่ง Exa
+    exa_search_query = exa_gov_query
+    
+    payload_gov = {
+        "query": exa_search_query,
+        "type": "auto",
+        "useAutoprompt": False,
+        "numResults": 25,
+        "includeDomains": [
+            # ─── ศูนย์ตรวจสอบข่าวลวง / Fact-Check ──────────────────────────────
+            "antifakenewscenter.com", "sure.factcheckthailand.org", "cofact.org",
+            # ─── สำนักนายกรัฐมนตรี ─────────────────────────────────────────────
+            "thaigov.go.th", "spm.thaigov.go.th", "opm.go.th",
+            "prd.go.th", "nbtworld.prd.go.th", "thainews.prd.go.th",
+            # ─── กระทรวงต่างๆ ครบทุกกระทรวง ────────────────────────────────────
+            "mfa.go.th",          # กระทรวงการต่างประเทศ
+            "mof.go.th",          # กระทรวงการคลัง
+            "most.go.th",         # กระทรวงการอุดมศึกษา วิทยาศาสตร์ฯ
+            "moc.go.th",          # กระทรวงพาณิชย์
+            "mol.go.th",          # กระทรวงแรงงาน
+            "moi.go.th",          # กระทรวงมหาดไทย
+            "moj.go.th",          # กระทรวงยุติธรรม
+            "moe.go.th",          # กระทรวงศึกษาธิการ
+            "moph.go.th",         # กระทรวงสาธารณสุข
+            "moit.go.th",         # กระทรวงดิจิทัลเพื่อเศรษฐกิจและสังคม
+            "mot.go.th",          # กระทรวงคมนาคม
+            "mua.go.th",          # กระทรวงการอุดมศึกษา
+            "mscr.go.th",         # กระทรวงวัฒนธรรม
+            "moac.go.th",         # กระทรวงเกษตรและสหกรณ์
+            "dmcr.go.th",         # กระทรวงทรัพยากรธรรมชาติและสิ่งแวดล้อม
+            "mnre.go.th",         # (เดิมชื่อ ทส.)
+            "mi.go.th",           # กระทรวงอุตสาหกรรม
+            "mde.go.th",          # กระทรวงพัฒนาสังคมและความมั่นคงของมนุษย์
+            "m-society.go.th",    # (อีกโดเมน พม.)
+            # ─── ตำรวจ / ทหาร / ความมั่นคง ─────────────────────────────────────
+            "royalthaipolice.go.th", "police.go.th",
+            "rtarf.mi.th",        # กองทัพไทย
+            "army.mi.th",         # กองทัพบก
+            "navy.mi.th",         # กองทัพเรือ
+            "rtaf.mi.th",         # กองทัพอากาศ
+            "isoc.go.th",         # กอ.รมน.
+            # ─── รัฐสภา / ฝ่ายนิติบัญญัติ ───────────────────────────────────────
+            "parliament.go.th",   # รัฐสภา
+            "senate.go.th",       # วุฒิสภา
+            # ─── ศาล / องค์กรอิสระ / ป้องกันการทุจริต ──────────────────────────
+            "court.go.th",        # ศาลยุติธรรม
+            "admincourt.go.th",   # ศาลปกครอง
+            "constitutionalcourt.or.th",  # ศาลรัฐธรรมนูญ
+            "ect.go.th",          # กกต.
+            "ombudsman.go.th",    # ผู้ตรวจการแผ่นดิน
+            "nacc.go.th",         # ป.ป.ช.
+            "pacc.go.th",         # ป.ป.ท.
+            "oag.go.th",          # สำนักงานอัยการสูงสุด
+            "nhrc.or.th",         # กสม.
+            "nbtc.go.th",         # กสทช.
+            # ─── สถาบันการเงิน / เศรษฐกิจ ───────────────────────────────────────
+            "bot.or.th",          # ธนาคารแห่งประเทศไทย
+            "sec.or.th",          # ก.ล.ต.
+            "fpo.go.th",          # สำนักงานเศรษฐกิจการคลัง
+            "set.or.th",          # ตลาดหลักทรัพย์
+            "dbd.go.th",          # กรมพัฒนาธุรกิจการค้า
+            # ─── สาธารณสุข / โรงพยาบาลรัฐ ──────────────────────────────────────
+            "dmsc.moph.go.th",    # กรมวิทยาศาสตร์การแพทย์
+            "ddc.moph.go.th",     # กรมควบคุมโรค
+            "fda.moph.go.th",     # อย.
+            "siriraj.mahidol.ac.th",
+            "si.mahidol.ac.th",
+            "ramathibodi.mahidol.ac.th",
+            "chulalongkornhospital.go.th",
+            # ─── ข่าวสาร รัฐวิสาหกิจ / หน่วยงานสำคัญ ───────────────────────────
+            "dsi.go.th",          # กรมสอบสวนคดีพิเศษ (DSI)
+            "narcotics.go.th",    # ป.ป.ส.
+            "sac.go.th",          # กรมสรรพากร (Revenue Dept)
+            "rd.go.th",
+            "customs.go.th",      # กรมศุลกากร
+            "sat.or.th",          # กีฬาแห่งชาติ (กกท.)
+            "egat.co.th",         # กฟผ.
+            "pea.co.th",          # กฟภ.
+            "mea.or.th",          # กฟน.
+            "pwa.co.th",          # ประปา
+            "ptt.com", "pttplc.com",
+            "tot.co.th",
+            # ─── สถาบันข้อมูล วิจัย สถิติ ────────────────────────────────────────
+            "nesdc.go.th", "nso.go.th", "tdri.or.th",
+            # ─── มหาวิทยาลัยรัฐชั้นนำ ────────────────────────────────────────────
+            "chula.ac.th", "mahidol.ac.th", "tu.ac.th", "cmu.ac.th",
+            "ku.ac.th", "psu.ac.th", "kku.ac.th", "sut.ac.th",
+        ],
+        "contents": { "text": { "maxCharacters": 1500 } }
+    }
+
+    # Exa Media: เปิดรับสำนักข่าวทั่วโลก (Open Web) — ใช้ excludeDomains แทน includeDomains
+    # เพื่อไม่ปิดกั้นสื่ออิสระ/ต่างประเทศที่ไม่ได้อยู่ใน Whitelist
+    payload_media = {
+        "query": exa_media_query,
+        "type": "auto",
+        "useAutoprompt": False,
+        "numResults": 20,
+        "excludeDomains": [
+            'youtube.com', 'youtu.be', 'tiktok.com', 'facebook.com', 'instagram.com',
+            'x.com', 'twitter.com', 'vimeo.com', 'dailymotion.com', 'line.me',
+            'blockdit.com', 'pantip.com', 'wikipedia.org', 'wiktionary.org',
+            'pinterest.com', 'reddit.com', 'quora.com',
+        ],
+        "contents": { "text": { "maxCharacters": 1500 } }
+    }
+
+    # === Parallel fetch: Exa (gov + open-media) + Serper Search + Serper News ===
+    exa_raw = []
+    serper_raw = []
+    serper_news_raw = []
+    exa_broad_raw_fallback = []
+    serper_raw_fallback = []
+
+    # PERSONAL_STORY: เว็บรัฐ (go.th) ไม่น่ามีเรื่องส่วนตัว/โซเชียลไวรัล → ข้ามช่อง gov
+    is_personal = (content_type or "").upper() == "PERSONAL_STORY"
+    media_num = 30 if is_personal else 25
+    serper_num = 20 if is_personal else 15
+    serper_news_num = 15
+    broad_num = 25
+
+    try:
+        min_refs = max(1, int(os.getenv("MIN_REFERENCES_REQUIRED", "3")))
+    except ValueError:
+        min_refs = 3
+    try:
+        default_min_relevance = max(20.0, float(os.getenv("DEFAULT_MIN_RELEVANCE_PCT", "55.0")))
+    except ValueError:
+        default_min_relevance = 55.0
+
+    max_age = _max_ref_age_days()
+
+    sq_clean = (serper_query or "").strip()[:200].replace('"', '')
+    if not sq_clean:
+        sq_clean = (query or "").strip()[:200].replace('"', '')
+    serper_query_clean = sq_clean
+    
+    snq_clean = (serper_news_query or "").strip()[:200].replace('"', '')
+    serper_news_query_clean = snq_clean if snq_clean else serper_query_clean
+
+    payload_broad = {
+        "query": exa_media_query,
+        "type": "auto",
+        "useAutoprompt": False,
+        "numResults": broad_num,
+        "contents": { "text": { "maxCharacters": 1500 } },
+        "excludeDomains": [
+            'youtube.com', 'youtu.be', 'tiktok.com', 'facebook.com', 'instagram.com',
+            'x.com', 'twitter.com', 'vimeo.com', 'dailymotion.com', 'line.me',
+            'blockdit.com', 'pantip.com', 'wikipedia.org', 'wiktionary.org',
+            'pinterest.com', 'reddit.com', 'quora.com',
+        ],
+    }
+
+    # === รอบที่ 1: Search หลัก (gov + open-media + Serper Organic + Serper News) ===
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {}
+        if exa_api_key:
+            if not is_personal:
+                futures['exa_gov'] = executor.submit(fetch_exa_api, payload_gov, exa_api_key, timeout)
+            payload_media["numResults"] = media_num
+            futures['exa_media'] = executor.submit(fetch_exa_api, payload_media, exa_api_key, timeout)
+        if serper_api_key and serper_query_clean:
+            futures['serper'] = executor.submit(fetch_serper_api, serper_query_clean, serper_api_key, serper_num, timeout)
+            futures['serper_news'] = executor.submit(fetch_serper_news_api, serper_news_query_clean, serper_api_key, serper_news_num, timeout)
+
+        if 'exa_gov' in futures: exa_raw.extend(futures['exa_gov'].result())
+        if 'exa_media' in futures: exa_raw.extend(futures['exa_media'].result())
+        if 'serper' in futures: serper_raw = futures['serper'].result()
+        if 'serper_news' in futures: serper_news_raw = futures['serper_news'].result()
+
+    # === Filter รอบที่ 1: เกณฑ์เข้ม (normal mode) ===
+    urls_seen = set()
+    processed_results = []
+
+    for item in exa_raw:
+        title = item.get("title", "").strip() if item.get("title") else "ข่าวที่เกี่ยวข้อง"
+        link = item.get("url", "")
+        content = item.get("text", "")[:1500]
+        pub_date = item.get("publishedDate", "ไม่ระบุ")
+
+        parsed_url = urlparse(link.lower())
+        domain = parsed_url.netloc.replace('www.', '')
+        link_clean = link.lower().split('?')[0].rstrip('/')
+
+        if re.search(r'\.(pdf|doc|docx|xls|xlsx|ppt|pptx)($|\?)', link.lower()): continue
+        if '[pdf]' in title.lower() or 'pdf' in title.lower(): continue
+        if clean_source_url and (clean_source_url == link_clean): continue
+        if link in urls_seen or _is_domain_blocked(domain): continue
+
+        # ⏰ ข่าวปีก่อน (ปีเก่าจริง) → เตะทิ้ง; ข่าวเดือนเก่าในปีเดียวกัน → ลดคะแนน
+        if _ref_too_old(pub_date, max_age):
             continue
-        if status["successful_requests"] == status["request_count"]:
-            status["status"] = "success"
-        elif status["successful_requests"] > 0:
-            status["status"] = "partial"
-        else:
-            status["status"] = "error"
-        status["elapsed_seconds"] = round(status["elapsed_seconds"], 3)
 
-    successful_requests = sum(status["successful_requests"] for status in provider_status.values())
-    full_provider_coverage = all(
-        provider_status[provider]["status"] == "success" for provider in ("exa", "serper")
-    )
+        text_content = (title + " " + content).lower()
+        match_score = 0
 
-    if successful_requests == 0:
-        references = []
-        excluded_counts = {}
-        deduplicated_count = 0
-        relevant_count = 0
-        search_status = "SEARCH_ERROR"
-        completed = False
-        content_enrichment = {
-            "configured": bool(exa_api_key), "attempted": False, "status": "not_needed",
-            "requested": 0, "enriched": 0, "elapsed_seconds": 0.0, "error": None,
-        }
-    else:
-        references, excluded_counts, deduplicated_count, relevant_count = _process_results(
-            raw_candidates,
-            clean_query,
-            locations,
-            core_keywords,
-            target_year,
-            num_results,
-            source_url,
+        is_factcheck = domain in factcheck_set
+        is_gov = domain.endswith('.go.th') or domain.endswith('.gov')
+        is_tier1 = domain in tier1_media_set
+        is_gov_or_factcheck = is_factcheck or is_gov
+
+        # ⚠️ 1. ด่านแก่นเรื่อง (Task 6): title hit / >=2 คำ / trusted domain / numeric exact
+        gate_pass, gate_score = _keyword_gate_passed(
+            all_keywords, text_content, title,
+            is_trusted_domain=is_gov_or_factcheck,
+            fallback_query=clean_query,
+            is_emergency_fallback=False,
         )
-        completed = True
-        content_enrichment = _enrich_serper_only_references(references, exa_api_key, timeout)
-        if content_enrichment["enriched"]:
-            rescored_references = [
-                _score_candidate(reference, clean_query, locations, core_keywords, target_year)
-                for reference in references
-            ]
-            references = [reference for reference in rescored_references if reference is not None]
-            references.sort(key=lambda item: (
-                -item["relevance_score"],
-                -len(item["providers"]),
-                item["source_tier"],
-                min(item["provider_ranks"].values(), default=99),
-                item["href"],
-            ))
-        if not full_provider_coverage:
-            search_status = "DEGRADED"
-        elif not references:
-            search_status = "NO_RESULTS"
+        if not gate_pass:
+            continue
+        match_score += gate_score
+        match_score += _ref_age_penalty(pub_date, max_age)
+
+        # Relevance Score (0-100%): บังคับ ≥ เกณฑ์
+        relevance_pct = _compute_relevance_score(
+            all_keywords, clean_query, title, content, locations, timeline
+        )
+        actual_relevance_threshold = default_min_relevance
+        if is_gov_or_factcheck or is_tier1:
+            actual_relevance_threshold = max(35.0, actual_relevance_threshold - 20)
+        # Open Web (Tier 2):
         else:
-            search_status = "OK"
+            actual_relevance_threshold = max(40.0, actual_relevance_threshold - 15)
+        if relevance_pct < actual_relevance_threshold:
+            continue
+        match_score += int(relevance_pct)
 
-    return {
-        "status": search_status,
-        "completed": completed,
-        "full_provider_coverage": full_provider_coverage,
-        "references": references,
-        "provider_status": provider_status,
-        "content_enrichment": content_enrichment,
-        "adaptive_search": adaptive_search,
-        "query_plan": query_plan,
-        "counts": {
-            "raw": len(raw_candidates),
-            "deduplicated": deduplicated_count,
-            "relevant": relevant_count,
-            "returned": len(references),
-        },
-        "excluded_counts": excluded_counts,
-        "elapsed_seconds": round(time.perf_counter() - total_started, 3),
-    }
+        # 2. ให้คะแนนสถานที่
+        if locations:
+            if any(loc.lower() in text_content for loc in locations):
+                match_score += 20
+
+        # 3. ให้คะแนนเวลา (fallback text-based สำหรับผลที่ไม่มี publishedDate)
+        if timeline:
+            try:
+                ty_th = str(timeline).strip()
+                ty_en = str(int(ty_th) - 543)
+                has_timeline = ty_th in text_content or ty_en in text_content
+                is_current_year = int(ty_th) == datetime.now().year + 543
+
+                years_in_text = re.findall(r'\b(25\d{2}|20\d{2})\b', text_content)
+                if years_in_text and not has_timeline and is_current_year:
+                    old_years = [y for y in years_in_text if (int(y) < int(ty_th) and int(y) > 2500) or (int(y) < int(ty_en) and int(y) > 2000)]
+                    if old_years:
+                        continue
+                if has_timeline:
+                    match_score += 20
+            except Exception:
+                pass
+
+        if not is_gov_or_factcheck:
+            if not is_actual_article(link, title):
+                continue
+
+        tier = 2  # Open Web / Niche / Independent / Foreign Media
+        if is_factcheck:
+            tier = 0
+            match_score += 30
+        elif is_gov:
+            tier = 0
+            match_score += 20
+        elif is_tier1:
+            tier = 1
+            match_score += 10
+
+        urls_seen.add(link)
+        processed_results.append({
+            'title': title,
+            'href': link,
+            'pub_date': pub_date[:10] if pub_date != "ไม่ระบุ" else pub_date,
+            'snippet': content,
+            'tier': tier,
+            'match_score': match_score,
+            'relevance_pct': relevance_pct,
+            'source': 'exa',
+        })
+
+    # === Filter Serper results (Google Organic → ต้องกรอง credibility + relevance แยก) ===
+    if serper_raw:
+        serper_filtered = _filter_serper_results(
+            serper_raw, all_keywords, timeline, locations,
+            clean_source_url, urls_seen, blacklisted_exact, tier1_media,
+            search_query=clean_query,
+            is_emergency_fallback=False,
+            min_relevance_pct=default_min_relevance,
+            is_domain_blocked_fn=_is_domain_blocked,
+        )
+        processed_results.extend(serper_filtered)
+
+    # === Filter Serper News results (Google News tab) ===
+    if serper_news_raw:
+        serper_news_filtered = _filter_serper_results(
+            serper_news_raw, all_keywords, timeline, locations,
+            clean_source_url, urls_seen, blacklisted_exact, tier1_media,
+            search_query=clean_query,
+            is_emergency_fallback=False,
+            min_relevance_pct=default_min_relevance,
+            is_domain_blocked_fn=_is_domain_blocked,
+        )
+        processed_results.extend(serper_news_filtered)
+
+    # === รอบที่ 2: Emergency Fallback Search (ถ้า high_quality refs < min_refs หลังรอบแรก) ===
+    # สาเหตุ: query แคบ อาจทำให้เจอแค่ 1 แหล่ง → ขยายมุมมองค้นหาเพื่อดึงสื่ออื่น
+    high_quality_r1 = [r for r in processed_results if r.get('relevance_pct', 0) >= 55.0]
+    if len(high_quality_r1) < min_refs:
+        logger.info(f"[Search] High-quality refs after round 1 = {len(high_quality_r1)} < {min_refs} → Trigger Targeted Expansion")
+
+        # สร้าง Query Permutations จาก Tri-Anchor สำหรับ fallback
+        entities, actions, metrics = _extract_tri_anchors(core_keywords, clean_query)
+        permutation_queries = []
+        if entities and actions:
+            permutation_queries.append(" ".join(entities[:2] + actions[:2]))
+        if entities and metrics:
+            permutation_queries.append(" ".join(entities[:2] + metrics[:2]))
+        if actions and metrics:
+            permutation_queries.append(" ".join(actions[:2] + metrics[:2]))
+
+        kw_only_query = (permutation_queries[0] if permutation_queries else " ".join(core_keywords[:4])).strip() or clean_query
+        kw_only_query = kw_only_query[:200].replace('"', '')
+        broad_search_query = (permutation_queries[1] if len(permutation_queries) > 1 else " ".join(core_keywords[:3] + [clean_query])).strip()
+
+        # Parallel Exa Broad + Serper Fallback
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            fb_futures = {}
+            if exa_api_key:
+                payload_broad["query"] = broad_search_query
+                fb_futures['exa_broad'] = executor.submit(fetch_exa_api, payload_broad, exa_api_key, timeout)
+            if serper_api_key and kw_only_query:
+                fb_futures['serper_fb'] = executor.submit(
+                    fetch_serper_api, kw_only_query, serper_api_key, serper_num, timeout
+                )
+            if 'exa_broad' in fb_futures:
+                exa_broad_raw_fallback = fb_futures['exa_broad'].result()
+            if 'serper_fb' in fb_futures:
+                serper_raw_fallback = fb_futures['serper_fb'].result()
+
+        # Filter Exa Broad (emergency mode: ผ่อนคลาย keyword gate + relevance threshold)
+        for item in exa_broad_raw_fallback:
+            title = item.get("title", "").strip() if item.get("title") else "ข่าวที่เกี่ยวข้อง"
+            link = item.get("url", "")
+            content = item.get("text", "")[:1500]
+            pub_date = item.get("publishedDate", "ไม่ระบุ")
+
+            parsed_url = urlparse(link.lower())
+            domain = parsed_url.netloc.replace('www.', '')
+            link_clean = link.lower().split('?')[0].rstrip('/')
+
+            if re.search(r'\.(pdf|doc|docx|xls|xlsx|ppt|pptx)($|\?)', link.lower()): continue
+            if '[pdf]' in title.lower() or 'pdf' in title.lower(): continue
+            if clean_source_url and (clean_source_url == link_clean): continue
+            if link in urls_seen or _is_domain_blocked(domain): continue
+            if _ref_too_old(pub_date, max_age): continue
+
+            text_content = (title + " " + content).lower()
+            match_score = 0
+            is_factcheck = domain in {'antifakenewscenter.com', 'sure.factcheckthailand.org', 'cofact.org'}
+            is_gov = domain.endswith('.go.th') or domain.endswith('.gov')
+            is_tier1 = domain in tier1_media_set
+            is_gov_or_factcheck = is_factcheck or is_gov
+
+            # Emergency mode: ผ่อนคลาย gate (1 คำก็ผ่าน) แต่ relevance ยังต้องผ่าน
+            gate_pass, gate_score = _keyword_gate_passed(
+                all_keywords, text_content, title,
+                is_trusted_domain=is_gov_or_factcheck,
+                fallback_query=clean_query,
+                is_emergency_fallback=True,
+            )
+            if not gate_pass: continue
+            match_score += gate_score
+            match_score += _ref_age_penalty(pub_date, max_age)
+
+            relevance_pct = _compute_relevance_score(
+                all_keywords, clean_query, title, content, locations, timeline
+            )
+            # Emergency threshold: ลดลง 15% (แต่ไม่ต่ำกว่า 30%)
+            fb_threshold = max(30.0, default_min_relevance - 15)
+            if is_gov_or_factcheck:
+                fb_threshold = max(20.0, fb_threshold - 5)
+            if relevance_pct < fb_threshold:
+                continue
+            match_score += int(relevance_pct) - 5  # หักคะแนนเล็กน้อยเพราะเป็น fallback
+
+            if locations:
+                if any(loc.lower() in text_content for loc in locations):
+                    match_score += 20
+            if timeline:
+                try:
+                    ty_th = str(timeline).strip()
+                    ty_en = str(int(ty_th) - 543)
+                    has_timeline = ty_th in text_content or ty_en in text_content
+                    is_current_year = int(ty_th) == datetime.now().year + 543
+                    years_in_text = re.findall(r'\b(25\d{2}|20\d{2})\b', text_content)
+                    if years_in_text and not has_timeline and is_current_year:
+                        old_years = [y for y in years_in_text if (int(y) < int(ty_th) and int(y) > 2500) or (int(y) < int(ty_en) and int(y) > 2000)]
+                        if old_years: continue
+                    if has_timeline: match_score += 20
+                except Exception: pass
+
+            if not is_gov_or_factcheck:
+                if not is_actual_article(link, title): continue
+
+            tier = 2  # Broad search fallback — Open Web tier
+            if is_factcheck:
+                tier = 0
+                match_score += 30
+            elif is_gov:
+                tier = 0
+                match_score += 20
+            elif is_tier1:
+                tier = 1
+                match_score += 10
+
+            urls_seen.add(link)
+            processed_results.append({
+                'title': title,
+                'href': link,
+                'pub_date': pub_date[:10] if pub_date != "ไม่ระบุ" else pub_date,
+                'snippet': content,
+                'tier': tier,
+                'match_score': match_score,
+                'relevance_pct': relevance_pct,
+                'source': 'exa_broad',
+            })
+
+        # Filter Serper Fallback (emergency mode)
+        if serper_raw_fallback:
+            serper_fb_filtered = _filter_serper_results(
+                serper_raw_fallback, all_keywords, timeline, locations,
+                clean_source_url, urls_seen, blacklisted_exact, tier1_media,
+                search_query=kw_only_query,
+                is_emergency_fallback=True,
+                min_relevance_pct=default_min_relevance,
+                is_domain_blocked_fn=_is_domain_blocked,
+            )
+            processed_results.extend(serper_fb_filtered)
+
+    # จัดอันดับด้วยคะแนนความสัมพันธ์ (Relevance) และ Tier ร่วมกัน
+    processed_results.sort(key=lambda x: (-(x.get('relevance_pct', 0) * 0.7 + x.get('match_score', 0)), x.get('tier', 2)))
+    
+    # คัดเฉพาะบทความที่ผ่านเกณฑ์ความเกี่ยวข้อง (Relevance >= 55.0%) อย่างเด็ดขาด (ห้ามเรื่องอื่นหลุดเข้ามา)
+    high_quality = [r for r in processed_results if r.get('relevance_pct', 0) >= 55.0]
+    final_sorted = high_quality
+    
+    for r in final_sorted:
+        r.pop('tier', None)
+        # เก็บ relevance_pct และ match_score ไว้สำหรับการตรวจสอบหรือส่งต่อ
+        # r.pop('match_score', None)
+        # r.pop('relevance_pct', None)
+
+    return final_sorted[:num_results]
 
 
-def search_news_references(
-    query: str,
-    locations: list,
-    core_keywords: list,
-    target_year: str,
-    num_results: int = 10,
-    source_url: str = "",
-) -> list:
-    """Backward-compatible retrieval entry point used by the current UI."""
-    return search_news_references_with_diagnostics(
-        query,
-        locations,
-        core_keywords,
-        target_year,
-        num_results=num_results,
-        source_url=source_url,
-    )["references"]
+def build_fast_search_query(value: str, max_chars: int = 140) -> str:
+    """Build a bounded raw query for the planner-parallel Wave-0 search.
+
+    Removes URLs and leading social/caption framing so the head start searches
+    the story, not the wrapper text.
+    """
+    text = re.sub(r"https?://\S+", " ", str(value or ""))
+    text = re.sub(r"\s+", " ", text).strip()
+    
+    # ตัดแท็กที่ระบบ scraper ใส่เข้ามา เช่น [ดึงด้วย: FB Embed Iframe 🌐] หรือ [ตรวจสอบด้วย: ...] 
+    text = re.sub(r"^\[.*?\][:：]?\s*", "", text)
+    
+    # ตัดคำนำแบบ social/caption framing + ป้ายชื่อแพลตฟอร์ม (Instagram:/Facebook:)
+    text = re.sub(
+        r"^(โพสต์จาก|แคปชั่น|ล่าสุด|ตามที่มีการแชร์|ข่าวลวง|เตือนภัย|พรีวิวจากโซเชียล)[:：]?\s*"
+        r"(?:Instagram|Facebook|FB|X|Twitter|TikTok|YouTube)?[:：]?\s*",
+        "",
+        text,
+        flags=re.IGNORECASE
+    )
+    # ตัดชื่อแพลตฟอร์มเดี่ยวๆ ที่อาจหลุดมาข้างหน้าสุด
+    text = re.sub(r"^(?:Instagram|Facebook|FB|X|Twitter|TikTok|YouTube)[:：]?\s*", "", text, flags=re.IGNORECASE)
+    
+    return text[:max_chars].strip()
+
+
+def merge_search_reports(wave0_refs: list, planned_refs: list, core_keywords: list, limit: int = 20, search_query: str = "") -> list:
+    """Merge Wave-0 (planner-parallel) refs with planned-search refs.
+
+    Planned refs already passed the keyword gate, so they keep priority. Wave-0
+    refs (searched without keywords) only join when they still match at least
+    one core keyword in their title/snippet — the same gate applied late — so
+    the raw head start cannot pull off-topic pages into the final set.
+    """
+    seen = set()
+    merged = []
+    for ref in planned_refs:
+        href = str(ref.get("href", "") or "").lower()
+        if href and href in seen:
+            continue
+        if href:
+            seen.add(href)
+        merged.append(ref)
+    for ref in wave0_refs:
+        href = str(ref.get("href", "") or "").lower()
+        if href and href in seen:
+            continue
+        if core_keywords:
+            text = (str(ref.get("title") or "") + " " + str(ref.get("snippet") or "")).lower()
+            gate_pass, _score = _keyword_gate_passed(
+                core_keywords, text, str(ref.get("title") or ""),
+                is_trusted_domain=False,
+                fallback_query=search_query,
+            )
+            if not gate_pass:
+                continue
+        if href:
+            seen.add(href)
+        merged.append(ref)
+    return merged[:limit]
