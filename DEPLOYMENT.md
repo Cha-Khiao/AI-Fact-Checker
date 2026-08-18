@@ -22,18 +22,18 @@
 
 ## 🚀 2. ขั้นตอนการ Deploy ทีละสเต็ป (Step-by-Step)
 
-### 🔹 สเต็ปที่ 1: Deploy Backend บน Render.com (ฟรี 100%)
+### 🔹 สเต็ปที่ 1: Deploy Backend บน Render.com
 
 1. เข้าเว็บไซต์ [Render.com](https://render.com) $\rightarrow$ กด **New +** $\rightarrow$ เลือก **Web Service**
 2. เชื่อมต่อ Git Repository โปรเจกต์นี้
-3. ตั้งค่าบริการ:
-   - **Name:** `factcheck-api` (หรือชื่อที่คุณต้องการ)
+3. ตั้งค่าบริการให้ตรงตามนี้:
+   - **Name:** `factcheck-api`
    - **Region:** `Singapore` (ใกล้ไทยที่สุดและเร็วที่สุด)
-   - **Branch:** `main` หรือ `dev`
+   - **Branch:** `dev` (หรือ `main`)
    - **Root Directory:** *(เว้นว่างไว้)*
-   - **Runtime:** `Python 3` (หรือเลือก `Docker` ก็ได้เพราะมี Dockerfile ในตัว)
+   - **Runtime:** `Python 3`
    - **Build Command:** `pip install -r requirements.txt`
-   - **Start Command:** `uvicorn api.main:app --host 0.0.0.0 --port $PORT`
+   - **Start Command:** `python -m uvicorn api.main:app --host 0.0.0.0 --port $PORT`
    - **Instance Type:** `Free`
 4. เพิ่ม **Environment Variables** ในหน้าตั้งค่า:
    - `AI_MODEL` = `google/gemini-2.5-flash`
@@ -53,33 +53,25 @@
 
 ### 🔹 สเต็ปที่ 2: ตั้งค่า Keep-Alive Ping (ป้องกันเซิร์ฟเวอร์หลับ 100%)
 
-เพื่อป้องกันไม่ให้ Render สั่งเซิร์ฟเวอร์หลับระหว่างการนำเสนอโปรเจกต์:
-
-#### เลือกใช้ **cron-job.org** (แนะนำ - ฟรี & ง่ายมาก):
-1. เข้า [cron-job.org](https://cron-job.org) แล้วสมัครสมาชิกฟรี
-2. กด **Create Cronjob**
-3. ตั้งค่า:
+1. เข้า [cron-job.org](https://cron-job.org) แล้วกด **Create Cronjob**
+2. ตั้งค่า:
    - **Title:** `FactCheck Keep-Alive`
    - **URL:** `https://<ชื่อแอปของคุณ>.onrender.com/health` (URL Backend จากสเต็ปที่ 1)
-   - **Execution Schedule:** เลือก **Every 5 minutes** (หรือ Every 2 minutes)
-4. กด **Save**
-5. **ผลลัพธ์:** ระบบจะยิงทักทายทุก 5 นาที ทำให้ Backend บน Render **ตื่นตลอด 24 ชั่วโมง ไม่มีหลับ ไม่มี Cold Start**
-
-*(หรือใช้ [Better Stack Uptime](https://betterstack.com/uptime) เพื่อมอนิเตอร์สถานะแบบ Real-time พร้อมแจ้งเตือนเข้าเมลได้เช่นกัน)*
+   - **Execution Schedule:** เลือก **Every 5 minutes**
+3. กด **Save** $\rightarrow$ เซิร์ฟเวอร์บน Render จะ **ตื่นตลอด 24 ชั่วโมง ไม่มีหลับ**
 
 ---
 
-### 🔹 สเต็ปที่ 3: Deploy Frontend บน Vercel (ฟรี 100%)
+### 🔹 สเต็ปที่ 3: Deploy Frontend บน Vercel
 
-1. เข้า [Vercel.com](https://vercel.com) $\rightarrow$ กด **Add New...** $\rightarrow$ **Project**
-2. เลือก Repository นี้
-3. ตั้งค่าโปรเจกต์:
-   - **Framework Preset:** `Next.js`
-   - **Root Directory:** ให้กด Edit แล้วเลือกโฟลเดอร์ **`web`**
-4. ในหัวข้อ **Environment Variables** ให้เพิ่มตัวแปร:
+1. เข้า [Vercel.com](https://vercel.com) $\rightarrow$ กด **Add New...** $\rightarrow$ **Project** $\rightarrow$ เลือก Repository นี้
+2. **⚠️ จุดสำคัญที่สุด (แก้ปัญหา Missing public directory):**
+   - ในหัวข้อ **Root Directory:** ให้กด **Edit** แล้วเลือกโฟลเดอร์ **`web`**
+   - **Framework Preset:** ให้มั่นใจว่าเป็น **`Next.js`**
+3. ในหัวข้อ **Environment Variables** ให้เพิ่มตัวแปร:
    - **Key:** `NEXT_PUBLIC_API_URL`
    - **Value:** `https://<ชื่อแอปของคุณ>.onrender.com` *(URL Backend จากสเต็ปที่ 1 โดยไม่ต้องใส่ slash ปิดท้าย)*
-5. กด **Deploy** $\rightarrow$ รอประมาณ 1–2 นาที Vercel จะสร้างลิงก์เว็บไซต์ให้คุณพร้อมใช้งานทันที (เช่น `https://factcheck-web.vercel.app`)
+4. กด **Deploy** $\rightarrow$ รอประมาณ 1 นาที Vercel จะสร้างลิงก์เว็บไซต์ให้คุณพร้อมใช้งานทันที (เช่น `https://factcheck-web.vercel.app`)
 
 ---
 
@@ -95,13 +87,3 @@ docker compose up -d
 # Frontend: http://localhost:3000
 # Backend:  http://localhost:8000
 ```
-
----
-
-## ✅ Checklist ตรวจสอบความพร้อม
-
-- [x] Backend ทำงานปกติ ตอบกลับ `/health` ได้รวดเร็ว
-- [x] Cron-job / Keep-Alive ตั้งเวลายิง Ping สม่ำเสมอ เซิร์ฟเวอร์ไม่หลับ
-- [x] Frontend บน Vercel มีตัวแปร `NEXT_PUBLIC_API_URL` ชี้ไปที่ Render Backend อย่างถูกต้อง
-- [x] ทดสอบการค้นหาทั้งแบบวางลิงก์และพิมพ์ข้อความ ส่งผลลัพธ์ SSE Stream ลื่นไหล
-- [x] ไฟล์ `.gitignore` บล็อกไฟล์ `.env` และข้อมูลส่วนบุคคล ปลอดภัย 100%
