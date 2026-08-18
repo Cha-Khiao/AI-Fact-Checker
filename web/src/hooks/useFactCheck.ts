@@ -3,7 +3,12 @@
 import { useState, useCallback, useRef } from "react";
 import { FactCheckResult, HistoryItem } from "@/types";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const getApiBase = () => {
+  const envUrl = process.env.NEXT_PUBLIC_API_URL;
+  if (!envUrl) return "http://localhost:8000";
+  return envUrl.replace(/\/+$/, "");
+};
+
 const HISTORY_KEY = "ai_factcheck_history_v1";
 
 export function useFactCheck() {
@@ -72,11 +77,12 @@ export function useFactCheck() {
       setProgressPct(5);
       setProgressMessage("กำลังเริ่มต้นเชื่อมต่อระบบ AI...");
 
+      const apiBase = getApiBase();
       let streamSucceeded = false;
 
       // 1. Try SSE Streaming first
       try {
-        const response = await fetch(`${API_BASE}/api/factcheck/stream`, {
+        const response = await fetch(`${apiBase}/api/factcheck/stream`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ input: cleanInput }),
@@ -142,7 +148,7 @@ export function useFactCheck() {
           setProgressPct(50);
           setProgressMessage("กำลังประมวลผลผ่านช่องทางสำรอง...");
 
-          const res = await fetch(`${API_BASE}/api/factcheck`, {
+          const res = await fetch(`${apiBase}/api/factcheck`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ input: cleanInput }),
@@ -160,11 +166,11 @@ export function useFactCheck() {
           saveToHistory(data, cleanInput);
         } catch (restErr: unknown) {
           if (!(restErr instanceof Error) || restErr.name !== "AbortError") {
-            setError(
-              restErr instanceof Error
+            const errorMsg =
+              restErr instanceof Error && restErr.message !== "Failed to fetch"
                 ? restErr.message
-                : "เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์"
-            );
+                : `ไม่สามารถเชื่อมต่อไปยัง Backend (${apiBase}) ได้ กรุณาตรวจสอบว่าเซิร์ฟเวอร์ Render ทำงานอยู่ หรือตรวจสอบตัวแปร NEXT_PUBLIC_API_URL ใน Vercel`;
+            setError(errorMsg);
           }
         }
       }
@@ -195,6 +201,5 @@ export function useFactCheck() {
     checkNews,
     reset,
     clearHistory,
-    setResult,
   };
 }
