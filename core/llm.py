@@ -14,33 +14,23 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-load_dotenv()
+load_dotenv(override=True)
 
 API_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
-AI_MODEL = os.getenv("AI_MODEL", "").strip()
+
+def get_ai_model() -> str:
+    load_dotenv(override=True)
+    return os.getenv("AI_MODEL", "").strip()
+
+def get_openrouter_api_key() -> str:
+    load_dotenv(override=True)
+    return os.getenv("OPENROUTER_API_KEY", "").strip()
+
+# Backwards compatibility alias
+# Backwards compatibility alias
+AI_MODEL = get_ai_model()
+OPENROUTER_API_KEY = get_openrouter_api_key()
 LLM_BACKEND = os.getenv("LLM_BACKEND", "openrouter").strip()
-
-def _planner_timeout() -> float:
-    try:
-        return float(os.getenv("PLANNER_TIMEOUT_SECONDS", "45"))
-    except ValueError:
-        return 45.0
-
-
-def _analyzer_default_timeout() -> float:
-    try:
-        return float(os.getenv("ANALYZER_TIMEOUT_SECONDS", "45"))
-    except ValueError:
-        return 45.0
-
-
-try:
-    import streamlit as st
-    if "OPENROUTER_API_KEY" in st.secrets: OPENROUTER_API_KEY = st.secrets["OPENROUTER_API_KEY"].strip()
-    if "AI_MODEL" in st.secrets: AI_MODEL = st.secrets["AI_MODEL"].strip()
-    if "LLM_BACKEND" in st.secrets: LLM_BACKEND = st.secrets["LLM_BACKEND"].strip()
-except Exception: pass
 
 def get_current_thai_time():
     tz = pytz.timezone('Asia/Bangkok')
@@ -69,6 +59,24 @@ def parse_json_safely(text: str) -> dict:
             try: return json.loads(raw_match, strict=s)
             except Exception: pass
     return {}
+
+def clean_fact_text(text: str) -> str:
+    if not text:
+        return ""
+    t = str(text)
+    # 1. Remove markdown headers like ###, ##, #
+    t = re.sub(r'(?m)^\s*#{1,6}\s*', '', t)
+    t = re.sub(r'#{1,6}\s*', '', t)
+    # 2. Remove citations like [อ้างอิง 1], (อ้างอิงที่ 1), [แหล่งอ้างอิงที่ 1], (แหล่งอ้างอิงที่ 1), [1], (อ้างอิง 1, 2)
+    t = re.sub(r'\[\s*(?:แหล่ง)?(?:ข้อมูล)?อ้างอิง(?:ที่)?\s*[\d,\sและ-]+\s*\]', '', t, flags=re.IGNORECASE)
+    t = re.sub(r'\(\s*(?:แหล่ง)?(?:ข้อมูล)?อ้างอิง(?:ที่)?\s*[\d,\sและ-]+\s*\)', '', t, flags=re.IGNORECASE)
+    t = re.sub(r'\[\s*แหล่งที่\s*[\d,\sและ-]+\s*\]', '', t, flags=re.IGNORECASE)
+    t = re.sub(r'\(\s*แหล่งที่\s*[\d,\sและ-]+\s*\)', '', t, flags=re.IGNORECASE)
+    t = re.sub(r'\[\s*\d+\s*\]', '', t)
+    # 3. Clean up spaces and empty lines
+    t = re.sub(r'[ \t]+', ' ', t)
+    t = re.sub(r'\n\s*\n+', '\n\n', t)
+    return t.strip()
 
 def validate_ai_response(parsed_dict: dict, raw_output: str = "", force_error: bool = False) -> dict:
     template = {
@@ -103,6 +111,20 @@ def validate_ai_response(parsed_dict: dict, raw_output: str = "", force_error: b
             parsed_dict["relevant_ref_ids"] = [int(n) for n in numbers if int(n) != 0]
     except (ValueError, TypeError, KeyError):
         parsed_dict["relevant_ref_ids"] = []
+
+    # Clean text content to remove ### headers and citations like [อ้างอิง 1]
+    parsed_dict["verdict_summary"] = clean_fact_text(parsed_dict.get("verdict_summary", ""))
+    parsed_dict["comparative_analysis"] = clean_fact_text(parsed_dict.get("comparative_analysis", ""))
+    
+    raw_supp = parsed_dict.get("supported_points", [])
+    if isinstance(raw_supp, str): raw_supp = [raw_supp]
+    cleaned_supp = [clean_fact_text(p) for p in raw_supp if clean_fact_text(p)]
+    parsed_dict["supported_points"] = cleaned_supp or ["ไม่พบข้อมูลที่สอดคล้องกับแหล่งอ้างอิง"]
+
+    raw_conf = parsed_dict.get("conflicting_points", [])
+    if isinstance(raw_conf, str): raw_conf = [raw_conf]
+    cleaned_conf = [clean_fact_text(p) for p in raw_conf if clean_fact_text(p)]
+    parsed_dict["conflicting_points"] = cleaned_conf or ["ไม่พบข้อมูลที่ขัดแย้งกับข้อเท็จจริง"]
 
     score = parsed_dict["score"]
     if score == 5:
@@ -158,9 +180,10 @@ def _call_openrouter_with_meta(prompt: str, system_msg: str, timeout: float = No
             max_tokens = int(os.getenv("LLM_MAX_TOKENS", "2048"))
         except ValueError:
             max_tokens = 2048
-    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
+    api_key = get_openrouter_api_key()
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     provider_sort = os.getenv("OPENROUTER_PROVIDER_SORT", "throughput")
-    target_model = model or AI_MODEL
+    target_model = model or get_ai_model()
     
     payload = {
         "model": target_model,
@@ -341,7 +364,7 @@ def analyze_intent_and_plan_search(news_text: str, timeout: float = None) -> tup
         prompt,
         "Classify content type (PERSONAL_STORY/NEWS_CLAIM/POLICY_ANNOUNCEMENT/GENERAL) and extract exact quotes and entities. NEVER invent keywords absent from the text. STRICTLY THAI LANGUAGE ONLY. NO CHINESE ALLOWED. Output strictly in JSON format.",
         timeout=timeout,
-        model=AI_MODEL,
+        model=get_ai_model(),
         max_tokens=planner_max_tokens,
     )
     return _normalize_planner_response(res_data, text_chunk, current_year_th)
@@ -560,9 +583,9 @@ def _build_analyzer_prompt(clean_claim: str, origin_info: str, ref_text: str, cu
 ⭐ **แนวทางการประเมินและเรียบเรียงบทวิเคราะห์ (Editorial Guidelines):**
 
 1. 🎯 **วิเคราะห์เปรียบเทียบอย่างลึกซึ้ง (In-Depth Comparison):**
-   - **กรณีเรื่องจริง (True / Mostly True):** อธิบายลำดับเหตุการณ์จริง ใครทำอะไร ที่ไหน ตัวเลขความเสียหายหรือข้อเท็จจริงตามที่สื่อหลักรายงาน พร้อมระบุ `[อ้างอิง X]`
+   - **กรณีเรื่องจริง (True / Mostly True):** อธิบายลำดับเหตุการณ์จริง ใครทำอะไร ที่ไหน ตัวเลขความเสียหายหรือข้อเท็จจริงตามที่สื่อหลักรายงาน
    - **กรณีบิดเบือน (Distorted / Misleading):** แยกแยะให้ชัดว่าส่วนใดเป็นเรื่องจริง และส่วนใดที่ถูกแต่งเติม ตัดต่อบริบท หรือชี้นำผิดทิศทาง
-   - **กรณีข่าวปลอม (False / Debunked):** ชี้แจงว่าสื่อหลัก/หน่วยงานทางการได้ออกมาปฏิเสธหรือเตือนภัยอย่างไรบ้าง พร้อมระบุ `[อ้างอิง X]`
+   - **กรณีข่าวปลอม (False / Debunked):** ชี้แจงว่าสื่อหลัก/หน่วยงานทางการได้ออกมาปฏิเสธหรือเตือนภัยอย่างไรบ้าง
 
 2. 🚨 **กฎเหล็กการตรวจจับข่าวปลอม/การหักล้าง (Anti-Fake & Debunk Detection):**
    - ถ้าแหล่งอ้างอิงมีคำว่า 'ข่าวปลอม', 'เตือนภัย', 'ชี้แจงไม่จริง', 'ปฏิเสธ', 'ไม่มีนโยบาย', 'แอบอ้าง' หรือเนื้อหาข่าวปฏิเสธข้อความของผู้ใช้ → ต้องให้ **คะแนน 1 (0% ข้อมูลเท็จ)** หรือ **2 (25% บิดเบือน)** ทันที! ห้ามมองว่าสอดคล้องเพียงเพราะมีคีย์เวิร์ดเรื่องเดียวกันเด็ดขาด!
@@ -577,13 +600,13 @@ def _build_analyzer_prompt(clean_claim: str, origin_info: str, ref_text: str, cu
 
 4. 📋 **โครงสร้างการเขียนตอบใน JSON (ห้ามใช้ภาษาหุ่นยนต์):**
    - `"verdict_summary"`: สรุปผลฟันธงใน 1-2 ประโยคด้วยภาษาที่เข้าใจง่าย กระชับ ตรงไปตรงมา ชี้ชัดว่า "จริง / เท็จ / บิดเบือน" เพราะเหตุใด
-   - `"comparative_analysis"`: เขียนบทวิเคราะห์เชิงลึกแบบแบ่งหัวข้อ Markdown ให้อ่านง่ายและชัดเจน ครอบคลุม 3 ส่วน:
-     📌 **1. สิ่งที่เกิดขึ้นจริง (ลำดับเหตุการณ์และหลักฐานยืนยัน):** อธิบายรายละเอียดของเหตุการณ์จริงตามที่สื่อหลักและทางการรายงาน พร้อมระบุ [อ้างอิง X]
-     🔍 **2. ประเด็นที่ต้องจับตา (จุดที่ถูกต้อง vs จุดที่บิดเบือนหรือเข้าใจผิด):** ชี้แจงเปรียบเทียบให้เห็นชัดเจนว่าข้อความที่นำมาตรวจ ส่วนไหนจริง ส่วนไหนเท็จหรือแต่งเติม
-     💡 **3. สรุปข้อควรระวังและสิ่งที่ควรทราบก่อนแชร์:** สรุปสิ่งที่ผู้รับข้อมูลควรระวัง (เช่น การเตือนภัยมิจฉาชีพ) และแนวทางการตรวจสอบข้อเท็จจริง
-   - `"supported_points"`: รายการประเด็นที่เป็น "ความจริง" เขียนเป็นประโยคที่สมบูรณ์ ชัดเจน พร้อมระบุ `[อ้างอิง X]` (หากไม่มีความจริงเลย ให้ระบุ: `["ไม่พบหลักฐานหรือรายงานข่าวจากสื่อหลักและทางการที่ยืนยันข้อความดังกล่าว"]`)
-   - `"conflicting_points"`: รายการประเด็นที่ "เป็นเท็จ บิดเบือน หรือถูกหักล้าง" เขียนเป็นประโยคที่สมบูรณ์และชัดเจน พร้อมระบุ `[อ้างอิง X]` (หากเป็นเรื่องจริงทั้งหมด ให้ระบุ: `["ข้อมูลมีความถูกต้องสอดคล้องกับรายงานของสื่อหลักและทางการ ไม่พบจุดบิดเบือน"]`)
+   - `"comparative_analysis"`: เขียนบทวิเคราะห์เชิงลึก 3 มิติให้อ่านง่ายและชัดเจน (1. สิ่งที่เกิดขึ้นจริง 2. ประเด็นที่ต้องจับตา 3. ข้อควรระวัง) โดย **ห้ามใส่เครื่องหมายสัญลักษณ์หัวข้อ เช่น ### หรือ ##** และ **ห้ามใส่ข้อความอ้างอิง เช่น [อ้างอิง X] หรือ (แหล่งอ้างอิงที่ X)** ในข้อความเด็ดขาด
+   - `"supported_points"`: รายการประเด็นที่เป็น "ความจริง" เขียนเป็นประโยคที่สมบูรณ์ ชัดเจน (ห้ามใส่ [อ้างอิง X] หรือ แหล่งอ้างอิงที่ X ต่อท้าย)
+   - `"conflicting_points"`: รายการประเด็นที่ "เป็นเท็จ บิดเบือน หรือถูกหักล้าง" เขียนเป็นประโยคที่สมบูรณ์และชัดเจน (ห้ามใส่ [อ้างอิง X] หรือ แหล่งอ้างอิงที่ X ต่อท้าย)
    - `"relevant_ref_ids"`: รายการหมายเลขอ้างอิงที่เกี่ยวข้องจริง เช่น [1, 2, 3]
+
+5. 🔗 **กรณีลิงก์และข้อความไม่ตรงกัน (Topic Mismatch Handling):**
+   - หากพบว่าเนื้อหาในลิงก์ที่แนบมาเป็นคนละเรื่องกับประเด็นข้อความที่ผู้ใช้ระบุ ให้ยึดการตรวจสอบข้อเท็จจริงตาม **"ประเด็นข้อความที่ผู้ใช้สอบถาม"** เป็นหลักเสมอ และระบุชี้แจงในบทวิเคราะห์อย่างโปร่งใสว่า ลิงก์ที่แนบมามีเนื้อหาไม่ตรงกับประเด็นข้อความที่ส่งตรวจ
 
 ⚠️ คำเตือนขั้นเด็ดขาด: ห้ามสร้างข้อความ หรือ Thought process เป็นภาษาจีน (Chinese) หรือภาษาอื่นที่ไม่ใช่ภาษาไทยเด็ดขาด! ตอบกลับเป็นภาษาไทยเท่านั้น!
 
@@ -591,9 +614,9 @@ def _build_analyzer_prompt(clean_claim: str, origin_info: str, ref_text: str, cu
 {{
     "thought": "วิเคราะห์ข้อเท็จจริงและลำดับเหตุการณ์เป็นภาษาไทยอย่างละเอียด",
     "verdict_summary": "สรุปผลการตรวจสอบฉบับเข้าใจง่ายใน 1-2 ประโยค",
-    "supported_points": ["ประเด็นที่ได้รับการยืนยันว่าเป็นความจริงอย่างสมบูรณ์ (พร้อมระบุ [อ้างอิง X])"],
-    "conflicting_points": ["ประเด็นที่เป็นเท็จ บิดเบือน หรือถูกหักล้างอย่างสมบูรณ์ (พร้อมระบุ [อ้างอิง X])"],
-    "comparative_analysis": "บทวิเคราะห์เชิงลึก 3 มิติ (1. สิ่งที่เกิดขึ้นจริง 2. ประเด็นที่ต้องจับตา 3. สรุปข้อควรระวังและสิ่งที่ควรทราบก่อนแชร์) พร้อมระบุ [อ้างอิง X]",
+    "supported_points": ["ประเด็นที่ได้รับการยืนยันว่าเป็นความจริงอย่างสมบูรณ์"],
+    "conflicting_points": ["ประเด็นที่เป็นเท็จ บิดเบือน หรือถูกหักล้างอย่างสมบูรณ์"],
+    "comparative_analysis": "บทวิเคราะห์เชิงลึก 3 มิติ (1. สิ่งที่เกิดขึ้นจริง 2. ประเด็นที่ต้องจับตา 3. สรุปข้อควรระวังและสิ่งที่ควรทราบก่อนแชร์)",
     "relevant_ref_ids": [1, 2],
     "score": ตัวเลข 1-5
 }}"""
@@ -626,7 +649,7 @@ def analyze_fact_checking(news_text: str, references: list, current_date_str: st
 
     system_msg, prompt = _build_analyzer_prompt(clean_claim, origin_info, ref_text, current_time_context, content_type, content_timeline, publish_date_context)
     _attempt_start = time.time()
-    final_result, meta = _call_openrouter_with_meta(prompt, system_msg, timeout=timeout, model=AI_MODEL, max_tokens=analyzer_max_tokens)
+    final_result, meta = _call_openrouter_with_meta(prompt, system_msg, timeout=timeout, model=get_ai_model(), max_tokens=analyzer_max_tokens)
     _attempt_elapsed = time.time() - _attempt_start
 
     if meta.get("payment_required"):
@@ -642,7 +665,7 @@ def analyze_fact_checking(news_text: str, references: list, current_date_str: st
         retry_budget = max(5.0, timeout - _attempt_elapsed - 1.0)
         compact_ref_text = _build_analyzer_ref_text(references, max_refs=6, max_chars=600)
         compact_system, compact_prompt = _build_analyzer_prompt(clean_claim, origin_info, compact_ref_text, current_time_context, content_type, content_timeline, publish_date_context)
-        retry_result, _retry_meta = _call_openrouter_with_meta(compact_prompt, compact_system, timeout=retry_budget, model=AI_MODEL, max_tokens=analyzer_max_tokens)
+        retry_result, _retry_meta = _call_openrouter_with_meta(compact_prompt, compact_system, timeout=retry_budget, model=get_ai_model(), max_tokens=analyzer_max_tokens)
         if _retry_meta.get("payment_required"):
             return validate_ai_response({"comparative_analysis": "Error 402: OpenRouter API เครดิตหมด (Payment Required) — กรุณาเติมเครดิตที่ openrouter.ai แล้วลองใหม่"}, force_error=True)
         if retry_result:

@@ -9,14 +9,12 @@ from urllib.parse import unquote, quote, urlparse, parse_qs
 from curl_cffi import requests
 
 try:
-    import streamlit as st
+    from .config import EXA_API_KEY
 except ImportError:
-    st = None
-
-try:
-    from config import EXA_API_KEY
-except ImportError:
-    EXA_API_KEY = os.getenv("EXA_API_KEY", "")
+    try:
+        from config import EXA_API_KEY
+    except ImportError:
+        EXA_API_KEY = os.getenv("EXA_API_KEY", "")
 
 MAX_REDIRECTS = 5
 MAX_INPUT_TEXT_LENGTH = 5000
@@ -404,8 +402,33 @@ def force_extract_news_link(social_url: str) -> str:
 
 
 def _clean_extracted_text(text: str) -> str:
+    if not text:
+        return ""
+    # 1. Strip markdown images and links
     text = re.sub(r'!\[[^\]]*\]\([^)]*\)', ' ', str(text or ''))
     text = re.sub(r'\[([^\]]+)\]\([^)]*\)', r'\1', text)
+
+    # 2. Strip social share bar patterns (e.g. แชร์บทความนี้ Facebook Twitter LinkedIn Messenger WhatsApp Line)
+    social_words = r'(แชร์บทความนี้|แชร์บทความ|แชร์เรื่องนี้|แชร์ต่อ|แชร์ไปยัง|แชร์โพสต์|แชร์|คัดลอกลิงก์|facebook|twitter|x\.com|linkedin|messenger|whatsapp|line|telegram|pinterest|threads|tiktok|instagram|copy link)'
+    text = re.sub(rf'(?:{social_words}[\s,\|/•·-]*){{2,}}', ' ', text, flags=re.IGNORECASE)
+
+    # 3. Strip common Thai news boilerplate prefixes & noise lines
+    boilerplate_phrases = [
+        r'แชร์บทความนี้\s*',
+        r'แชร์บทความ\s*',
+        r'คัดลอกลิงก์\s*',
+        r'อ่านข่าวที่เกี่ยวข้อง.*',
+        r'ข่าวที่เกี่ยวข้อง.*',
+        r'แท็กที่เกี่ยวข้อง.*',
+        r'สงวนลิขสิทธิ์.*',
+        r'ติดตามข่าวสารผ่านทาง.*',
+        r'ดาวน์โหลดแอปพลิเคชัน.*',
+        r'ตรวจหวย\s+ผลสลากกินแบ่งรัฐบาล.*',
+        r'ดูดวงวันนี้.*'
+    ]
+    for bp in boilerplate_phrases:
+        text = re.sub(bp, ' ', text, flags=re.IGNORECASE)
+
     text = re.sub(r'\s+', ' ', text).strip()
     return text[:12000]
 
@@ -447,17 +470,38 @@ def _extract_article_text_from_html(html: str) -> str:
     soup = BeautifulSoup(html or '', 'html.parser')
     candidates = []
 
+    # 1. Extract headline (h1 or OpenGraph title)
+    h1_tag = soup.find('h1')
+    headline = h1_tag.get_text(strip=True) if h1_tag else ""
+    if not headline:
+        og_title = soup.find('meta', property='og:title')
+        headline = og_title.get('content', '').strip() if og_title else ""
+
+    # 2. Check JSON-LD structured data first
     for script in soup.find_all('script', attrs={'type': 'application/ld+json'}):
         try:
             candidates.extend(
-                (value, 1800.0)
+                (value, 2000.0)
                 for value in _article_json_ld_candidates(json.loads(script.string or script.get_text()))
             )
         except Exception:
             pass
 
-    for element in soup(["script", "style", "nav", "header", "footer", "aside", "noscript", "form", "button"]):
+    # 3. Strip tags and common advertising/social/recommended widgets
+    for element in soup(["script", "style", "nav", "header", "footer", "aside", "noscript", "form", "button", "iframe", "svg"]):
         element.extract()
+
+    noise_selectors = [
+        '.ad', '.ads', '.advertisement', '.banner', '.sponsor', '.sponsored',
+        '.share', '.social', '.social-share', '.share-box', '.sharing',
+        '.related', '.related-news', '.recommended', '.trending', '.popular-news', '.most-popular',
+        '.comments', '.comment-section', '.reply', '.reply-box',
+        '.breadcrumb', '.breadcrumbs', '.tag', '.tags', '.tag-cloud',
+        '.lottery', '.horoscope', '.lotto', '.widget', '.sidebar'
+    ]
+    for sel in noise_selectors:
+        for noise in soup.select(sel):
+            noise.extract()
 
     selectors = [
         ('[itemprop="articleBody"]', 1800.0), ('article', 1500.0), ('main', 900.0),
@@ -469,7 +513,7 @@ def _extract_article_text_from_html(html: str) -> str:
     for selector, structure_bonus in selectors:
         for node in soup.select(selector):
             text = node.get_text(separator=' ', strip=True)
-            if len(text) >= 100:
+            if len(text) >= 80:
                 candidates.append((text, structure_bonus))
 
     body_text = soup.get_text(separator=' ', strip=True)
@@ -482,11 +526,13 @@ def _extract_article_text_from_html(html: str) -> str:
         if clean_value:
             cleaned_candidates.append((clean_value, structure_bonus))
     if not cleaned_candidates:
-        return ""
+        return headline or ""
     best_text, _ = max(
         cleaned_candidates,
         key=lambda item: _content_quality_score(item[0]) + item[1]
     )
+    if headline and headline not in best_text:
+        return f"{headline}\n\n{best_text}".strip()
     return best_text
 
 def fetch_with_fallback(url: str) -> str:
@@ -598,7 +644,7 @@ def parse_relative_or_explicit_date(text: str) -> tuple:
     if not text_clean:
         return None, "ไม่ระบุในข้อความ", False
 
-    # 1. Thai explicit date (e.g. "25 มิถุนายน 2569", "25 มิ.ย. 69", "25 June 2026") - CHECK FIRST!
+    # 1. Thai explicit date (e.g. "25 มิถุนายน 2569", "25 มิ.ย. 69", "25 June 2026")
     thai_date_match = re.search(r'(\d{1,2})\s*(ม\.ค\.|มกราคม|ก\.พ\.|กุมภาพันธ์|มี\.ค\.|มีนาคม|เม\.ย\.|เมษายน|พ\.ค\.|พฤษภาคม|มิ\.ย\.|มิถุนายน|ก\.ค\.|กรกฎาคม|ส\.ค\.|สิงหาคม|ก\.ย\.|กันยายน|ต\.ค\.|ตุลาคม|พ\.ย\.|พฤศจิกายน|ธ\.ค\.|ธันวาคม)\s*(\d{2,4})', text_clean)
     if thai_date_match:
         day = int(thai_date_match.group(1))
@@ -671,6 +717,13 @@ def extract_text_from_url(url: str) -> dict:
         
         if any(re.search(p, url.lower()) for p in VIDEO_PATTERNS):
             return {"error": "VIDEO_DETECTED"}
+
+        IMAGE_PATTERNS = [
+            r'\.(jpg|jpeg|png|webp|gif|svg|bmp|tiff|avif|ico)($|\?)',
+            r'/gallery/', r'/galleries/', r'/photos?/', r'/albums?/', r'/pictures?/', r'/wallpaper/'
+        ]
+        if any(re.search(p, url.lower()) for p in IMAGE_PATTERNS):
+            return {"error": "IMAGE_DETECTED"}
 
         if re.search(r'(slot|casino|ufa\d+|pgslot|เว็บพนัน|bet365|joker123|sexybaccarat)', domain.lower()):
             if not any(w in domain.lower() for w in ['thairath.co.th', 'khaosod.co.th', 'matichon.co.th', 'dailynews.co.th', 'prachachat.net', 'bangkokbiznews.com', 'mgronline.com', 'thaipbs.or.th', 'pptvhd36.com', 'ch7.com', 'thestandard.co', 'workpointtoday.com', 'amarintv.com', 'nationtv.tv', 'tnnthailand.com', 'springnews.co.th', '77kaoded.com', 'voathai.com', 'xinhuathai.com']):
