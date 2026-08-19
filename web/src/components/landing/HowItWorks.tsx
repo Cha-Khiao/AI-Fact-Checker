@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { Fade } from "react-awesome-reveal";
+import { Fade } from "@/components/Fade";
 import { Lottie } from "lottie-react";
 import {
   CheckCircle,
