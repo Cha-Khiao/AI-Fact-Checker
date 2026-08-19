@@ -16,7 +16,6 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-
 INTERNATIONAL_AUTHORITY_DOMAINS = {
     'mfa.go.th', 'thaiembassy.org', 'thaiembassy.com', 'thaiembassy.de',
     'thaiembassy.fr', 'thaiembassy.jp', 'thaiembassy.sg', 'usembassy.gov',
@@ -46,13 +45,11 @@ def _max_ref_age_days() -> int:
     except ValueError:
         return 365
 
-
 def _get_planner_timeout() -> float:
     try:
         return float(os.getenv("PLANNER_TIMEOUT_SECONDS", "45"))
     except ValueError:
         return 45.0
-
 
 _THAI_MONTHS_MAP = {
     'ม.ค.': 1, 'มกราคม': 1, 'ก.พ.': 2, 'กุมภาพันธ์': 2, 'มี.ค.': 3, 'มีนาคม': 3,
@@ -64,7 +61,6 @@ _THAI_MONTHS_MAP = {
     'aug': 8, 'august': 8, 'sep': 9, 'september': 9, 'oct': 10, 'october': 10,
     'nov': 11, 'november': 11, 'dec': 12, 'december': 12
 }
-
 
 def _parse_pub_date(pub_date, title: str = "", url: str = "", snippet: str = "") -> tuple:
     """
@@ -89,7 +85,6 @@ def _parse_pub_date(pub_date, title: str = "", url: str = "", snippet: str = "")
     if not text_clean:
         return None, None
 
-    # 1. ISO format: YYYY-MM-DD
     m_iso = re.search(r'(20\d{2}|25\d{2})[-/](\d{1,2})[-/](\d{1,2})', text_clean)
     if m_iso:
         y_val = int(m_iso.group(1))
@@ -103,8 +98,6 @@ def _parse_pub_date(pub_date, title: str = "", url: str = "", snippet: str = "")
         except ValueError:
             pass
 
-    # 2. Thai & English relative dates
-    # 2.1 วันนี้ / เมื่อวาน / เมื่อวานนี้ / เมื่อคืน / เมื่อสักครู่ / today / yesterday
     if any(w in text_clean.lower() for w in ['วันนี้', 'เมื่อสักครู่', 'เมื่อกี้', 'คืนนี้', 'today', 'just now']):
         return now.year, 0
     if any(w in text_clean.lower() for w in ['เมื่อวานนี้', 'เมื่อวาน', 'เมื่อคืน', 'yesterday']):
@@ -114,7 +107,6 @@ def _parse_pub_date(pub_date, title: str = "", url: str = "", snippet: str = "")
         dt = now - timedelta(days=2)
         return dt.year, 2
 
-    # 2.2 Relative units (Thai & English) with or without explicit digit (e.g. 1 วันก่อน, ปีก่อน, เดือนที่แล้ว)
     rel_match = re.search(
         r'(\d+)?\s*(วินาที|วิ|นาที|น\.|ชั่วโมง|ชม\.|วัน|สัปดาห์|อาทิตย์|เดือน|ปี|sec|second|seconds|min|minute|minutes|hour|hours|hr|hrs|day|days|d|week|weeks|wk|wks|month|months|mo|mos|year|years|yr|yrs)\s*(ที่แล้ว|ที่ผ่านมา|ก่อน|ago)?',
         text_clean,
@@ -141,7 +133,6 @@ def _parse_pub_date(pub_date, title: str = "", url: str = "", snippet: str = "")
             dt = now - timedelta(days=days)
             return dt.year, days
 
-    # 3. Thai absolute date: "16 ส.ค. 2569", "16 สิงหาคม 2569 เวลา 21.00 น."
     thai_date_match = re.search(
         r'(?:((?:คืน)?วัน(?:จันทร์|อังคาร|พุธ|พฤหัสบดี|พฤหัส|ศุกร์|เสาร์|อาทิตย์))\s*(?:ที่)?)?\s*(\d{1,2})\s*(ม\.ค\.|มกราคม|ก\.พ\.|กุมภาพันธ์|มี\.ค\.|มีนาคม|เม\.ย\.|เมษายน|พ\.ค\.|พฤษภาคม|มิ\.ย\.|มิถุนายน|ก\.ค\.|กรกฎาคม|ส\.ค\.|สิงหาคม|ก\.ย\.|กันยายน|ต\.ค\.|ตุลาคม|พ\.ย\.|พฤศจิกายน|ธ\.ค\.|ธันวาคม)\s*(\d{2,4})(?:\s*เวลา\s*(\d{1,2}[\.:]\d{2})\s*(?:น\.|น)?)?',
         text_clean
@@ -164,7 +155,6 @@ def _parse_pub_date(pub_date, title: str = "", url: str = "", snippet: str = "")
         except ValueError:
             pass
 
-    # 4. English absolute date: "Jun 9, 2026", "16 Aug 2026", "August 16, 2026"
     en_match1 = re.search(r'([a-zA-Z]{3,9})\s+(\d{1,2}),?\s+(\d{4})', text_clean)
     if en_match1:
         m_str = en_match1.group(1).lower()
@@ -191,7 +181,6 @@ def _parse_pub_date(pub_date, title: str = "", url: str = "", snippet: str = "")
             except ValueError:
                 pass
 
-    # 5. Year in URL / Title / Snippet fallback (e.g. /2025/11/ or 2568)
     y_in_text = re.search(r'\b(25\d{2}|20\d{2})\b', f"{title} {url} {snippet}")
     if y_in_text:
         y_val = int(y_in_text.group(1))
@@ -201,7 +190,6 @@ def _parse_pub_date(pub_date, title: str = "", url: str = "", snippet: str = "")
 
     return None, None
 
-
 def _format_pub_date_display(pub_date: str, title: str = "", url: str = "", snippet: str = "") -> str:
     if not pub_date or pub_date == "ไม่ระบุ":
         yr_ce, _ = _parse_pub_date("ไม่ระบุ", title=title, url=url, snippet=snippet)
@@ -209,8 +197,7 @@ def _format_pub_date_display(pub_date: str, title: str = "", url: str = "", snip
             return f"ปี {yr_ce + 543} ({yr_ce})"
         return "ไม่ระบุ"
     p_clean = str(pub_date).strip()
-    
-    # 1. ISO format: 2026-08-16T... or 2026-08-16
+
     iso_match = re.match(r'^(\d{4})-(\d{1,2})-(\d{1,2})', p_clean)
     if iso_match:
         y, m, d = int(iso_match.group(1)), int(iso_match.group(2)), int(iso_match.group(3))
@@ -218,15 +205,12 @@ def _format_pub_date_display(pub_date: str, title: str = "", url: str = "", snip
         m_str = months_th[m - 1] if 1 <= m <= 12 else str(m)
         y_th = y + 543 if y < 2500 else y
         return f"{d} {m_str} {y_th}"
-        
-    # 2. Thai explicit date: 16 ส.ค. 2569
+
     th_date_match = re.search(r'(\d{1,2})\s*([^\d\s]+)\s*(25\d{2}|20\d{2})', p_clean)
     if th_date_match:
         return th_date_match.group(0)
 
-    # 3. Clean relative phrases without trailing cutoffs
     return re.sub(r'[\s•·|,-]+$', '', p_clean)
-
 
 def _ref_too_old(pub_date, max_days: int, query: str = "", timeline: str = "", title: str = "", url: str = "", snippet: str = "") -> bool:
     """Age of News (Recency): Day-based and context-based calculation."""
@@ -235,11 +219,9 @@ def _ref_too_old(pub_date, max_days: int, query: str = "", timeline: str = "", t
         return False
     current_year = datetime.now().year
 
-    # 1. Detect if the query is about tonight / today / live / current events / this year
     combined_query = f"{query} {timeline}".lower()
     is_live_current = any(w in combined_query for w in ['คืนนี้', 'วันนี้', 'สด', 'ดูสด', 'ถ่ายทอดสด', 'โปรแกรมแข่ง', 'ชิงอันดับ', 'ชิงชนะเลิศ', 'ผลแข่ง', 'ล่าสุด', 'ด่วน'])
 
-    # 2. Extract target year (if specified in query or timeline)
     target_year_ce = None
     y_match = re.search(r'\b(25\d{2}|20\d{2})\b', combined_query)
     if y_match:
@@ -248,14 +230,12 @@ def _ref_too_old(pub_date, max_days: int, query: str = "", timeline: str = "", t
     elif is_live_current:
         target_year_ce = current_year
 
-    # If the target year is current year (or future) and the article is from a PAST calendar year (e.g. 2025, 2024, 2023):
     if target_year_ce and year_ce:
         if target_year_ce <= current_year and year_ce < target_year_ce:
             return True
         elif target_year_ce > current_year and year_ce < current_year:
             return True
 
-    # If it is a live event (คืนนี้ / วันนี้), reject articles older than 60 days
     if is_live_current and days_old > 60:
         return True
 
@@ -263,20 +243,19 @@ def _ref_too_old(pub_date, max_days: int, query: str = "", timeline: str = "", t
         return False
     return days_old > max_days
 
-
 def _ref_age_penalty(pub_date, max_days: int, title: str = "", url: str = "", snippet: str = "") -> int:
     """ให้คะแนนโบนัสแก่ข่าวสดใหม่ และลดคะแนนสำหรับข่าวเก่า."""
     _year_ce, days_old = _parse_pub_date(pub_date, title=title, url=url, snippet=snippet)
     if days_old is None:
         return 0
     if days_old <= 7:
-        return 15  # ข่าวสดใหม่มากใน 1 สัปดาห์
+        return 15
     elif days_old <= 30:
-        return 10  # ข่าวสดใหม่ใน 1 เดือน
+        return 10
     elif days_old <= 90:
-        return 5   # ข่าว 1-3 เดือน
+        return 5
     elif days_old > 365:
-        return -20 # ข่าวเก่าเกิน 1 ปี
+        return -20
     return 0
 
 _EXA_DISABLED = False
@@ -338,7 +317,6 @@ def fetch_serper_api(query, api_key, num_results=10, timeout=15, tbs=""):
         logger.error("Serper API Error: %s", e)
         return []
 
-
 def fetch_serper_news_api(query, api_key, num_results=10, timeout=15):
     """Fetch from Google News tab (/news) — ดีสำหรับข่าวสด/ข่าวที่ยังไม่ติดหน้าแรก Google Search."""
     url = "https://google.serper.dev/news"
@@ -366,7 +344,7 @@ def fetch_serper_news_api(query, api_key, num_results=10, timeout=15):
 
 def is_actual_article(url: str, title: str) -> bool:
     """ตรวจสอบว่าเป็นบทความข่าวเดี่ยวจริง ไม่ใช่หน้าแรก, หมวดหมู่, หรือหน้าลิสต์ข่าวรวม.
-    
+
     - ตัดทิ้ง: หน้าหมวดหมู่, หน้าแรก, หน้าค้นหา, ไฟล์รูปภาพ, อัลบั้มภาพ
     - ยอมรับ: ข่าวสรุปประเด็น/สรุปเหตุการณ์ประจำปี
     """
@@ -375,11 +353,9 @@ def is_actual_article(url: str, title: str) -> bool:
     path_parts = [p for p in path.split('/') if p]
     title_lower = title.lower().strip()
 
-    # 1. Non-article file formats (PDFs, Documents, Images, Media)
     if re.search(r'\.(pdf|doc|docx|xls|xlsx|ppt|pptx|jpg|jpeg|png|webp|gif|svg|bmp|tiff|avif|ico|mp4|avi|mov|mp3|wav)($|\?)', url.lower()):
         return False
 
-    # 1.1 Injected SEO parasite scripts / spam gateways (e.g. bangkokviews.asp, /view.asp?id=, /slot/)
     if 'bangkokview' in url.lower() or 'bangkokviews' in url.lower():
         return False
     if re.search(r'(\.asp\?|\.php\?id=.*(slot|bet|casino|view|news|id=))', url.lower()):
@@ -388,7 +364,7 @@ def is_actual_article(url: str, title: str) -> bool:
 
     gallery_title_patterns = [
         r'\bphoto[\s_-]*gallery\b', r'\bgallery\b', r'\bphoto[\s_-]*album\b', r'\balbum\b', r'\bwallpaper(s)?\b',
-        r'\[pdf\]', r'\[ภาพชุด', r'\[รวมภาพ', r'\[ประมวลภาพ', r'\[อัลบั้มภาพ', 
+        r'\[pdf\]', r'\[ภาพชุด', r'\[รวมภาพ', r'\[ประมวลภาพ', r'\[อัลบั้มภาพ',
         r'\[รวมรูปภาพ', r'\[รวมรูป', r'\[ชุดภาพ', r'\[photo', r'\[gallery',
         r'รวมรูปภาพ', r'รวมรูป', r'รวมภาพ', r'ภาพชุด', r'ประมวลภาพ', r'อัลบั้มภาพ', r'อัลบั้มรูป', r'ชุดภาพ',
         r'รูปที่\s*\d+\s*จาก\s*\d+', r'ภาพที่\s*\d+\s*จาก\s*\d+',
@@ -397,13 +373,11 @@ def is_actual_article(url: str, title: str) -> bool:
     if any(re.search(pat, title_lower) for pat in gallery_title_patterns):
         return False
 
-    # 2. Empty or root homepage paths
     if not path_parts:
         return False
     if path in ['/', '/th', '/en', '/th/', '/en/', '/index.html', '/index.php', '/default.aspx', '/home']:
         return False
 
-    # 3. Pure Photo / Gallery / Video Clip / Audio Path Filter (Strict Rejection if ANY segment matches)
     media_path_regex = r'(gallery|galleries|photo|photos|album|albums|image|images|picture|pictures|wallpaper|wallpapers|pic\b|pics\b|video|videos|clip|clips|reel|reels|shorts|podcast|podcasts)'
     for seg in path_parts:
         seg_normalized = seg.replace('-', '').replace('_', '')
@@ -413,7 +387,6 @@ def is_actual_article(url: str, title: str) -> bool:
     if any(sub in parsed.netloc for sub in ['video.', 'gallery.', 'photo.', 'photos.', 'podcast.', 'audio.', 'wallpaper.', 'picture.']):
         return False
 
-    # 3.1 Pure Photo Hosting Domains
     photo_hosting_domains = [
         'pinterest.com', 'flickr.com', 'imgur.com', 'shutterstock.com',
         'gettyimages.com', 'freepik.com', 'unsplash.com', 'pixabay.com'
@@ -421,7 +394,6 @@ def is_actual_article(url: str, title: str) -> bool:
     if any(ph in parsed.netloc for ph in photo_hosting_domains):
         return False
 
-    # 3.2 Aggregator / Category / Tag / Archive / Section Listing Filter
     listing_keywords = {
         'category', 'categories', 'topic', 'topics', 'tag', 'tags',
         'author', 'authors', 'page', 'search', 'archive', 'archives',
@@ -432,7 +404,6 @@ def is_actual_article(url: str, title: str) -> bool:
         if last_part in listing_keywords or (len(path_parts) >= 2 and path_parts[-2] in listing_keywords and not re.search(r'\d{4,}', last_part) and len(last_part) < 15):
             return False
 
-    # 4. Common News CMS Section Index Paths (e.g. /news/politic, /news/crime, /news/society)
     section_names = {
         'politic', 'politics', 'society', 'crime', 'foreign', 'international',
         'economy', 'economic', 'business', 'entertainment', 'entertain', 'sport',
@@ -452,7 +423,6 @@ def is_actual_article(url: str, title: str) -> bool:
         if (p0 in ['news', 'lifestyle', 'section', 'category', 'topic', 'th', 'en'] or p0 in section_names) and (p1 in section_names or p1 in ['all', 'latest', 'index']):
             return False
 
-    # 5. Generic Title Filter
     exact_generic_titles = [
         'หน้าแรก', 'หน้าหลัก', 'ข่าววันนี้', 'ข่าวล่าสุด', 'ข่าวด่วน', 'รวมข่าว',
         'ข่าวทั้งหมด', 'home', 'official website', 'เว็บไซต์ทางการ', 'สารบัญ'
@@ -463,7 +433,6 @@ def is_actual_article(url: str, title: str) -> bool:
     if any(title_lower.startswith(g) for g in exact_generic_titles) and len(title_lower) < 20 and not re.search(r'\b(25\d{2}|20\d{2})\b', title_lower):
         return False
 
-    # 6. Academic Thesis Filter
     academic_path_patterns = ['/handle/', '/bitstream/', '/thesis', '/dissertation', '/dspace', '/repository', '/ethesis', '/tci-thaijo', '/e-journal']
     if any(pat in path for pat in academic_path_patterns):
         return False
@@ -478,7 +447,6 @@ def is_actual_article(url: str, title: str) -> bool:
 
     return True
 
-
 def _text_has_query_overlap(query: str, text: str, min_chars: int = 5) -> bool:
     q = query.lower().strip()
     t = text.lower()
@@ -491,14 +459,12 @@ def _text_has_query_overlap(query: str, text: str, min_chars: int = 5) -> bool:
             return True
     return False
 
-
 _GENERIC_QUERY_WORDS = {
     'เพื่อนรัก', 'เพื่อน', 'แฟน', 'เมีย', 'ผัว', 'สามี', 'ภรรยา', 'หนุ่ม',
     'สาว', 'รัก', 'เงิน', 'ลูก', 'ครอบครัว', 'คนรัก', 'แฟนเก่า', 'แม่',
     'พ่อ', 'น้อง', 'พี่', 'ลุง', 'ป้า', 'ตา', 'ยาย', 'ให้', 'ข่าว', 'ด่วน',
     'ล่าสุด', 'เปิดใจ', 'เผย', 'เจอ', 'พบ', 'ช็อก', 'สุด', 'มาก',
 }
-
 
 def _query_overlap_specific(fallback_query: str, text: str, min_chars: int = 6) -> bool:
     """fallback overlap ที่กรองคำสามัญออก."""
@@ -507,14 +473,12 @@ def _query_overlap_specific(fallback_query: str, text: str, min_chars: int = 6) 
     specific = " ".join(w for w in fallback_query.split() if w not in _GENERIC_QUERY_WORDS)
     return _text_has_query_overlap(specific, text, min_chars)
 
-
 def _match_single_kw(kw_str: str, text_lower: str) -> tuple:
     """Helper to check if a keyword matches text strictly."""
     if not kw_str:
         return False, False
     kw_clean = kw_str.strip().lower()
-    
-    # 1. Numeric keyword
+
     nums = re.findall(r'\d+', kw_clean.replace(',', ''))
     if nums:
         text_no_commas = re.sub(r'(?<=\d),(?=\d)', '', text_lower)
@@ -525,7 +489,6 @@ def _match_single_kw(kw_str: str, text_lower: str) -> tuple:
             return False, False
         return True, True
 
-    # 2. Non-numeric keyword
     if kw_clean in text_lower:
         return True, False
     subwords = [w for w in kw_clean.split() if len(w) > 2]
@@ -533,16 +496,15 @@ def _match_single_kw(kw_str: str, text_lower: str) -> tuple:
         return True, False
     return False, False
 
-
 def _keyword_partial_match(keywords: list, text: str) -> tuple:
     if not keywords:
         return False, 0, [], False
-    
+
     text_lower = text.lower()
     matched = []
     total_score = 0
     has_numeric_exact = False
-    
+
     for kw in keywords:
         is_match, is_num = _match_single_kw(kw, text_lower)
         if is_match:
@@ -550,9 +512,8 @@ def _keyword_partial_match(keywords: list, text: str) -> tuple:
             total_score += 15 if is_num else 10
             if is_num:
                 has_numeric_exact = True
-    
-    return len(matched) > 0, total_score, matched, has_numeric_exact
 
+    return len(matched) > 0, total_score, matched, has_numeric_exact
 
 ACTION_KEYWORDS = {
     'เด้ง', 'สั่งย้าย', 'ย้าย', 'สั่งฟาด', 'ฟาด', 'จับ', 'บุกจับ', 'จับกุม', 'ทลาย',
@@ -588,7 +549,6 @@ def _extract_tri_anchors(keywords: list, query: str = "") -> tuple:
 
     return entities, actions, metrics
 
-
 def _compute_relevance_score(keywords: list, query: str, title: str, snippet: str,
                              locations: list = None, timeline: str = None) -> float:
     """คำนวณค่าความสัมพันธ์แบบ Universal Tri-Anchor Precision (0-100%)."""
@@ -618,11 +578,8 @@ def _compute_relevance_score(keywords: list, query: str, title: str, snippet: st
 
     score = title_score + content_score + q_score
 
-    # -------------------------------------------------------------------------
-    # 0. Zero-Tolerance Cross-Topic & Sport Mismatch Filter
-    # -------------------------------------------------------------------------
     combined_query_kws = f"{query} {' '.join(keywords or [])}".lower()
-    
+
     SPORTS_CONFLICTS = [
         ({'วอลเลย์บอล', 'volleyball', 'ลูกยาง'}, {'ฟุตบอล', 'football', 'บอลสด', 'บอลไทย', 'ฟุตซอล', 'บาสเกตบอล', 'แบดมินตัน', 'มวย', 'เทนนิส'}),
         ({'ฟุตบอล', 'football', 'บอลสด', 'บอลไทย'}, {'วอลเลย์บอล', 'ลูกยาง', 'ฟุตซอล', 'บาสเกตบอล', 'แบดมินตัน', 'มวย'}),
@@ -646,13 +603,13 @@ def _compute_relevance_score(keywords: list, query: str, title: str, snippet: st
 
     e_hits = sum(1 for k in entities if _match_single_kw(k, content)[0]) if entities else 0
     e_ratio = (e_hits / len(entities)) if entities else 1.0
-    
+
     a_hit = any(_match_single_kw(k, content)[0] for k in actions) if actions else True
     m_hit = any(_match_single_kw(k, content)[0] for k in metrics) if metrics else True
 
     if actions and not a_hit:
         score *= 0.25
-        
+
     GENERIC_BROAD_ENTITIES = {
         'ไทย', 'ประเทศไทย', 'รัฐบาล', 'ตำรวจ', 'ศาล', 'ประชาชน', 'คนไทย', 'กรุงเทพ', 'ทั่วประเทศ', 'เจ้าหน้าที่', 'ข่าว', 'ทีมชาติไทย',
         'อีจัน', 'ejan', 'ไทยรัฐ', 'thairath', 'เดลินิวส์', 'dailynews', 'ข่าวสด', 'khaosod',
@@ -668,7 +625,6 @@ def _compute_relevance_score(keywords: list, query: str, title: str, snippet: st
         'เพื่อน', 'เพื่อนรัก', 'เพื่อนสนิท', 'คนรัก', 'แฟน', 'สามี', 'ภรรยา', 'แม่', 'พ่อ', 'ลูก', 'ญาติ', 'คนรู้จัก'
     }
 
-    # Extract distinct specific discriminative entities (Proper nouns, specific opponents, unique subjects)
     specific_entities = []
     for k in (keywords or []):
         k_clean = str(k).strip()
@@ -677,7 +633,7 @@ def _compute_relevance_score(keywords: list, query: str, title: str, snippet: st
             continue
         if re.search(r'^\d+(\.\d+)?\s*(บาท|%|เปอร์เซ็นต์|ล้าน|หมื่น|พัน|แสน|ปี|วัน|เดือน|ชม|นาที|เซต)?$', k_clean):
             continue
-        # If keyword contains 'ไทย' alongside another word (e.g. 'ไทย U17'), extract the non-generic part ('u17')
+
         if 'ไทย' in k_lower and len(k_lower) > 4:
             sub = k_lower.replace('ทีมชาติไทย', '').replace('ประเทศไทย', '').replace('ไทย', '').strip()
             if len(sub) >= 2:
@@ -690,7 +646,7 @@ def _compute_relevance_score(keywords: list, query: str, title: str, snippet: st
     if specific_entities:
         spec_hits = sum(1 for k in specific_entities if _match_single_kw(k, content)[0])
         spec_ratio = spec_hits / len(specific_entities)
-        # If candidate reference misses specific discriminators (e.g. missed 'โครเอเชีย'):
+
         if len(specific_entities) >= 2 and spec_hits < 2:
             score *= 0.1
         elif spec_ratio < 0.6:
@@ -701,7 +657,6 @@ def _compute_relevance_score(keywords: list, query: str, title: str, snippet: st
         elif e_hits == 0:
             score *= 0.15
 
-    # Check Year Mismatch
     target_year = None
     if timeline and str(timeline).isdigit():
         target_year = int(timeline)
@@ -715,13 +670,12 @@ def _compute_relevance_score(keywords: list, query: str, title: str, snippet: st
         ty_th = str(target_year)
         ty_en = str(target_year - 543)
         has_correct_year = ty_th in content or ty_en in content
-        
-        # Check if text prominently has an OLD/DIFFERENT year (e.g. 2025 when target is 2026)
+
         content_years = re.findall(r'\b(25\d{2}|20\d{2})\b', content)
         if content_years and not has_correct_year:
             old_years = [y for y in content_years if (int(y) < target_year and int(y) > 2500) or (int(y) < (target_year - 543) and int(y) > 2000)]
             if old_years:
-                score *= 0.3  # Severe penalty for wrong/old year
+                score *= 0.3
 
     if (not entities or e_ratio >= 0.5) and (not actions or a_hit):
         if specific_entities and spec_ratio >= 1.0 and len(specific_entities) >= 2:
@@ -732,7 +686,6 @@ def _compute_relevance_score(keywords: list, query: str, title: str, snippet: st
             score = min(100.0, score + 5.0)
 
     return max(0.0, min(100.0, round(score, 1)))
-
 
 def _keyword_gate_passed(keywords: list, text_content: str, title: str, pub_date: str = "ไม่ระบุ",
                          is_trusted_domain: bool = False, fallback_query: str = "",
@@ -754,7 +707,7 @@ def _keyword_gate_passed(keywords: list, text_content: str, title: str, pub_date
         'sanook', 'สนุก', 'kapook', 'กระปุก', 'mgronline', 'ผู้จัดการ', 'thestandard',
         'thethaiger', 'thaiger', 'monomax', 'mono29', 'amarintv', 'อมรินทร์', 'เนชั่น', 'nation'
     }
-    # If all matched keywords are purely generic words (e.g. only 'ไทย' or only year number)
+
     non_generic_matched = [k for k in matched_kws if str(k).lower() not in GENERIC_BROAD_ENTITIES and not str(k).isdigit()]
     if not non_generic_matched and not has_numeric_exact:
         return False, 0
@@ -779,7 +732,6 @@ def _keyword_gate_passed(keywords: list, text_content: str, title: str, pub_date
     if fallback_query and _query_overlap_specific(fallback_query, text_content):
         return True, kw_score + 5
     return False, 0
-
 
 def _filter_serper_results(raw_results, core_keywords, timeline, locations,
                            clean_source_url, urls_seen, blacklisted_domains_or_set, trusted_media,
@@ -865,20 +817,18 @@ def _filter_serper_results(raw_results, core_keywords, timeline, locations,
             core_keywords, search_query, title, snippet, locations, timeline
         )
         actual_threshold = min_relevance_pct if not is_emergency_fallback else max(30.0, min_relevance_pct - 20)
-        
-        # Strict equality: Relevance threshold is mandatory for ALL domains without exception
+
         if relevance_pct < actual_threshold:
             continue
 
         match_score += int(relevance_pct)
         if is_tier1 or is_gov or is_factcheck:
-            match_score += 20  # Credibility bonus for ranking order among relevant articles only
+            match_score += 20
 
         if locations:
             if any(loc.lower() in text_content for loc in locations):
                 match_score += 20
 
-        # Target Year Matching and Old-Year Exclusion
         current_year_ce = datetime.now().year
         current_year_th = current_year_ce + 543
         target_year_ce = None
@@ -886,7 +836,7 @@ def _filter_serper_results(raw_results, core_keywords, timeline, locations,
 
         combined_context = f"{search_query} {timeline}".lower()
         is_live_event = any(w in combined_context for w in ['คืนนี้', 'วันนี้', 'สด', 'ดูสด', 'ถ่ายทอดสด', 'โปรแกรมแข่ง', 'ชิงอันดับ', 'ชิงชนะเลิศ', 'ผลแข่ง'])
-        
+
         y_match = re.search(r'\b(25\d{2}|20\d{2})\b', combined_context)
         if y_match:
             y_val = int(y_match.group(1))
@@ -937,12 +887,11 @@ def _filter_serper_results(raw_results, core_keywords, timeline, locations,
 
     return filtered
 
-
 def _build_channel_queries(clean_query: str, core_keywords: list, core_keywords_formal: list = None, exact_quote: str = "") -> tuple:
     formal_kws = [k for k in (core_keywords_formal or []) if k]
     exa_gov_query = " ".join(formal_kws[:3]) if formal_kws else clean_query
     exa_media_query = exact_quote if exact_quote and len(exact_quote.split()) >= 4 else clean_query
-    
+
     kw_punchy = " ".join((core_keywords or [])[:5]).strip()
     if kw_punchy and len(kw_punchy) >= 4:
         serper_query = kw_punchy
@@ -953,14 +902,13 @@ def _build_channel_queries(clean_query: str, core_keywords: list, core_keywords_
 
     return exa_gov_query, exa_media_query, serper_query, serper_news_query
 
-
 def search_news_references(query: str, locations: list, core_keywords: list, timeline: str, num_results: int = 20, source_url: str = "", timeout: float = 25, core_keywords_formal: list = None, content_type: str = "NEWS_CLAIM", exact_quote: str = "") -> list:
     if not query.strip() or query == "SKIP_SEARCH": return []
 
     core_keywords_formal = [k for k in (core_keywords_formal or []) if k]
     core_keywords = [k for k in (core_keywords or []) if k]
     all_keywords = list(dict.fromkeys(core_keywords + core_keywords_formal))
-    
+
     exa_api_key = os.getenv("EXA_API_KEY", "").strip()
     if not exa_api_key:
         try:
@@ -1049,9 +997,9 @@ def search_news_references(query: str, locations: list, core_keywords: list, tim
     exa_gov_query, exa_media_query, serper_query, serper_news_query = _build_channel_queries(
         clean_query, core_keywords, core_keywords_formal=core_keywords_formal, exact_quote=exact_quote
     )
-    
+
     exa_search_query = exa_gov_query
-    
+
     payload_gov = {
         "query": exa_search_query,
         "type": "auto",
@@ -1122,7 +1070,7 @@ def search_news_references(query: str, locations: list, core_keywords: list, tim
     if not sq_clean:
         sq_clean = (query or "").strip()[:200].replace('"', '')
     serper_query_clean = sq_clean
-    
+
     snq_clean = (serper_news_query or "").strip()[:200].replace('"', '')
     serper_news_query_clean = snq_clean if snq_clean else serper_query_clean
 
@@ -1204,13 +1152,12 @@ def search_news_references(query: str, locations: list, core_keywords: list, tim
         match_score += int(relevance_pct)
 
         if is_gov_or_factcheck or is_tier1:
-            match_score += 20  # Credibility bonus for ranking order among relevant articles only
+            match_score += 20
 
         if locations:
             if any(loc.lower() in text_content for loc in locations):
                 match_score += 20
 
-        # Target Year Matching and Old-Year Exclusion
         current_year_ce = datetime.now().year
         current_year_th = current_year_ce + 543
         target_year_ce = None
@@ -1218,7 +1165,7 @@ def search_news_references(query: str, locations: list, core_keywords: list, tim
 
         combined_context = f"{clean_query} {timeline}".lower()
         is_live_event = any(w in combined_context for w in ['คืนนี้', 'วันนี้', 'สด', 'ดูสด', 'ถ่ายทอดสด', 'โปรแกรมแข่ง', 'ชิงอันดับ', 'ชิงชนะเลิศ', 'ผลแข่ง'])
-        
+
         y_match = re.search(r'\b(25\d{2}|20\d{2})\b', combined_context)
         if y_match:
             y_val = int(y_match.group(1))
@@ -1370,7 +1317,6 @@ def search_news_references(query: str, locations: list, core_keywords: list, tim
                 if any(loc.lower() in text_content for loc in locations):
                     match_score += 20
 
-            # Target Year Matching and Old-Year Exclusion
             current_year_ce = datetime.now().year
             current_year_th = current_year_ce + 543
             target_year_ce = None
@@ -1378,7 +1324,7 @@ def search_news_references(query: str, locations: list, core_keywords: list, tim
 
             combined_context = f"{clean_query} {timeline}".lower()
             is_live_event = any(w in combined_context for w in ['คืนนี้', 'วันนี้', 'สด', 'ดูสด', 'ถ่ายทอดสด', 'โปรแกรมแข่ง', 'ชิงอันดับ', 'ชิงชนะเลิศ', 'ผลแข่ง'])
-            
+
             y_match = re.search(r'\b(25\d{2}|20\d{2})\b', combined_context)
             if y_match:
                 y_val = int(y_match.group(1))
@@ -1441,10 +1387,10 @@ def search_news_references(query: str, locations: list, core_keywords: list, tim
             processed_results.extend(serper_fb_filtered)
 
     processed_results.sort(key=lambda x: (-(x.get('relevance_pct', 0) * 0.7 + x.get('match_score', 0)), x.get('tier', 2)))
-    
+
     high_quality = [r for r in processed_results if r.get('relevance_pct', 0) >= 35.0]
     final_sorted = high_quality
-    
+
     final_cleaned = []
     for r in final_sorted:
         raw_u = str(r.get('url') or r.get('href') or '')
@@ -1459,11 +1405,6 @@ def search_news_references(query: str, locations: list, core_keywords: list, tim
         r.pop('tier', None)
         final_cleaned.append(r)
 
-    # =========================================================================
-    # FINAL ZERO-TOLERANCE INTEGRITY GATE:
-    # Drops ANY reference from a past calendar year (2025, 2024, 2023) when
-    # the target claim is current, live, or specifies a specific year.
-    # =========================================================================
     final_sanitized = []
     combined_query_context = f"{clean_query} {timeline}".lower()
     is_live_or_current = any(w in combined_query_context for w in ['คืนนี้', 'วันนี้', 'สด', 'ดูสด', 'ถ่ายทอดสด', 'โปรแกรมแข่ง', 'ชิงอันดับ', 'ชิงชนะเลิศ', 'ผลแข่ง', 'ล่าสุด', 'ด่วน'])
@@ -1493,21 +1434,18 @@ def search_news_references(query: str, locations: list, core_keywords: list, tim
         t_title = r.get('title', '')
         u_url = r.get('href', r.get('url', ''))
         s_snip = r.get('snippet', '')
-        
+
         yr_ce, d_old = _parse_pub_date(p_date, title=t_title, url=u_url, snippet=s_snip)
-        
-        # 1. Past year check
+
         if final_target_year_ce and yr_ce:
             if final_target_year_ce <= datetime.now().year and yr_ce < final_target_year_ce:
                 continue
             elif final_target_year_ce > datetime.now().year and yr_ce < datetime.now().year:
                 continue
-                
-        # 2. Live event age check (cannot be > 60 days)
+
         if is_live_or_current and d_old is not None and d_old > 60:
             continue
-            
-        # 4. Cross-Topic & Sport Conflict Check
+
         article_full_text = f"{t_title} {s_snip}".lower()
         has_sport_mismatch = False
         for target_sport, conflict_sport in SPORTS_CONFLICTS:
@@ -1518,7 +1456,6 @@ def search_news_references(query: str, locations: list, core_keywords: list, tim
         if has_sport_mismatch:
             continue
 
-        # 5. Opponent Matchup Mismatch Check
         if len(target_opponents) == 1:
             opp = target_opponents[0]
             other_opps = [c for c in COUNTRIES if c != opp and c != 'ไทย' and c in t_title.lower()]
@@ -1528,7 +1465,6 @@ def search_news_references(query: str, locations: list, core_keywords: list, tim
         final_sanitized.append(r)
 
     return final_sanitized[:num_results]
-
 
 def build_fast_search_query(value: str, max_chars: int = 140) -> str:
     text = re.sub(r"https?://\S+", " ", str(value or ""))
@@ -1543,7 +1479,6 @@ def build_fast_search_query(value: str, max_chars: int = 140) -> str:
     )
     text = re.sub(r"^(?:Instagram|Facebook|FB|X|Twitter|TikTok|YouTube)[:：]?\s*", "", text, flags=re.IGNORECASE)
     return text[:max_chars].strip()
-
 
 def merge_search_reports(wave0_refs: list, planned_refs: list, core_keywords: list, limit: int = 20, search_query: str = "") -> list:
     seen = set()

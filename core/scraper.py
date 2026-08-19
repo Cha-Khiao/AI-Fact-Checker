@@ -19,7 +19,7 @@ except ImportError:
 MAX_REDIRECTS = 5
 MAX_INPUT_TEXT_LENGTH = 5000
 SCRAPER_TIMEOUT = int(os.getenv("SCRAPER_TIMEOUT", "8"))
-MAX_RESPONSE_SIZE = 5 * 1024 * 1024 # 5MB
+MAX_RESPONSE_SIZE = 5 * 1024 * 1024
 
 def _is_safe_url(url: str) -> bool:
     """Block private/reserved IPs and non-HTTP schemes (SSRF protection)."""
@@ -37,7 +37,7 @@ def _is_safe_url(url: str) -> bool:
                 if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
                     return False
         except socket.gaierror:
-            return False # Fail safe on DNS error
+            return False
         except ValueError:
             pass
         return True
@@ -46,50 +46,50 @@ def _is_safe_url(url: str) -> bool:
 
 def clean_mobile_url(url: str) -> str:
     url = unquote(url.strip())
-    
+
     if "l.facebook.com/l.php?u=" in url:
         try:
             url = unquote(url.split("u=")[1].split("&")[0])
         except (IndexError, ValueError):
             pass
-            
+
     url = url.replace("://m.facebook.com", "://www.facebook.com")
     url = url.replace("://mobile.twitter.com", "://twitter.com")
     url = url.replace("://x.com", "://twitter.com")
-    
+
     if "?" in url:
         base_url, query_str = url.split("?", 1)
         fragment = ""
-        
+
         if "#" in query_str:
             query_str, fragment = query_str.split("#", 1)
-            if fragment: 
+            if fragment:
                 fragment = "#" + fragment
-                
+
         params = query_str.split("&")
-        
+
         junk_params = (
-            'mibextid=', 'igsh=', 'si=', 'fbclid=', 'is_from_webapp=', 
+            'mibextid=', 'igsh=', 'si=', 'fbclid=', 'is_from_webapp=',
             'h=', 's=', 't=', 'rdid=', 'share_url=', 'utm_', 'c='
         )
-        
+
         clean_params = [
-            p for p in params 
+            p for p in params
             if not p.lower().startswith(junk_params)
         ]
-        
+
         if clean_params:
             url = f"{base_url}?{'&'.join(clean_params)}{fragment}"
         else:
             url = f"{base_url}{fragment}"
-            
+
     url = url.rstrip('#')
     return url
 
 def resolve_facebook_redirects(url: str) -> str:
     if "facebook.com/share/" not in url.lower() and "fb.watch" not in url.lower():
         return url
-        
+
     def try_googlebot():
         try:
             bot_headers = {
@@ -97,13 +97,13 @@ def resolve_facebook_redirects(url: str) -> str:
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
             }
             res = requests.get(url, headers=bot_headers, timeout=SCRAPER_TIMEOUT, allow_redirects=False)
-            
+
             if res.status_code in [301, 302, 303, 307] and 'Location' in res.headers:
                 real_url = res.headers['Location']
                 if "facebook.com/share/" not in real_url.lower() and "login" not in real_url.lower():
                     if _is_safe_url(real_url):
                         return real_url
-                    
+
             res_full = requests.get(url, headers=bot_headers, timeout=SCRAPER_TIMEOUT, allow_redirects=True)
             meta_match = re.search(r'http-equiv=["\']?refresh["\']?[^>]*url=["\']?([^"\'>]+)["\']?', res_full.text, re.IGNORECASE)
             if meta_match:
@@ -111,7 +111,7 @@ def resolve_facebook_redirects(url: str) -> str:
                 if "facebook.com/share/" not in refresh_url.lower() and "login" not in refresh_url.lower():
                     if _is_safe_url(refresh_url):
                         return refresh_url
-                    
+
             canonical = re.search(r'<link\s+rel=["\']canonical["\']\s+href=["\']([^"\']+)["\']', res_full.text, re.IGNORECASE)
             if canonical:
                 canonical_url = canonical.group(1).replace('&amp;', '&')
@@ -140,7 +140,7 @@ def resolve_facebook_redirects(url: str) -> str:
             result = future.result()
             if result:
                 return result
-                
+
     return url
 
 def expand_url(url: str) -> str:
@@ -150,12 +150,12 @@ def expand_url(url: str) -> str:
             res = requests.get(url, impersonate="safari", allow_redirects=True, timeout=SCRAPER_TIMEOUT)
             final_url = res.url
             meta_match = re.search(r'http-equiv=["\']?refresh["\']?[^>]*url=["\']?([^"\'>]+)["\']?', res.text, re.IGNORECASE)
-            if meta_match: 
+            if meta_match:
                 final_url = meta_match.group(1)
             js_match = re.search(r'window\.location\.(?:href|replace)\s*=\s*["\'](.*?)["\']', res.text, re.IGNORECASE)
-            if js_match: 
+            if js_match:
                 final_url = js_match.group(1)
-            
+
             if _is_safe_url(final_url):
                 return final_url
         except Exception:
@@ -180,7 +180,7 @@ def extract_social_metadata(url: str) -> str:
             if match:
                 clean_path = match.group(1).split('?')[0]
                 twitter_std_url = f"https://twitter.com{clean_path}"
-                
+
                 def try_oembed():
                     try:
                         oembed_url = f"https://publish.twitter.com/oembed?url={quote(twitter_std_url)}&omit_script=true"
@@ -243,14 +243,14 @@ def extract_social_metadata(url: str) -> str:
                         res = future.result()
                         if res:
                             return res
-                
+
                 return "PLATFORM_BLOCKED"
 
         elif "instagram.com/" in url:
             match = re.search(r'instagram\.com/(?:p|reel|tv)/([^/?]+)', url)
             if match:
                 shortcode = match.group(1)
-                
+
                 def try_ig_embed():
                     try:
                         embed_url = f"https://www.instagram.com/p/{shortcode}/embed/captioned/"
@@ -260,7 +260,7 @@ def extract_social_metadata(url: str) -> str:
                             og_desc = soup.find("meta", attrs={"name": "description"}) or soup.find("meta", property="og:description")
                             if og_desc and og_desc.get("content"):
                                 return f"โพสต์จาก Instagram:\n{og_desc['content'].strip()}"
-                            
+
                             ld = soup.find('script', type='application/ld+json')
                             if ld and ld.string:
                                 try:
@@ -313,17 +313,16 @@ def extract_social_metadata(url: str) -> str:
 
             return "PLATFORM_BLOCKED"
 
-        # --- Facebook ---
         elif "facebook.com" in url or "fb.watch" in url:
             clean_url = url
-            
+
             def fb_iframe():
                 try:
                     embed_url = f"https://www.facebook.com/plugins/post.php?href={quote(clean_url)}&show_text=true"
                     res_embed = requests.get(embed_url, impersonate="chrome", timeout=SCRAPER_TIMEOUT)
                     if res_embed.status_code == 200:
                         soup_embed = BeautifulSoup(res_embed.text, 'html.parser')
-                        for element in soup_embed(["script", "style", "form", "button", "a"]): 
+                        for element in soup_embed(["script", "style", "form", "button", "a"]):
                             element.extract()
                         extracted = soup_embed.get_text(separator='\n', strip=True)
                         cleaned = _clean_fb_text(extracted)
@@ -367,20 +366,20 @@ def extract_social_metadata(url: str) -> str:
                     res_text, method = future.result()
                     if res_text:
                         return f"โพสต์จาก Facebook {method}:\n{res_text}"
-                        
+
             return "PLATFORM_BLOCKED"
 
         response = requests.get(url, impersonate="chrome", timeout=SCRAPER_TIMEOUT)
         soup = BeautifulSoup(response.text, 'html.parser')
-        
+
         og_title = soup.find("meta", property="og:title") or soup.find("meta", attrs={"name": "og:title"})
         og_desc = soup.find("meta", property="og:description") or soup.find("meta", attrs={"name": "og:description"})
-        
+
         title = og_title["content"] if og_title else (soup.title.string if soup.title else "")
         desc = og_desc["content"] if og_desc else ""
-        
+
         return f"{title}\n{desc}".strip()
-        
+
     except Exception:
         return "SCRAPE_FAILED"
 
@@ -392,27 +391,24 @@ def force_extract_news_link(social_url: str) -> str:
         domain_pattern = "|".join([d.replace('.', r'\.') for d in whitelist])
         regex = rf'https?://(?:www\.)?(?:[a-zA-Z0-9-]+\.)*(?:{domain_pattern})[^\s"\'<>\\]*'
         found_links = re.findall(regex, decoded_html)
-        
+
         for link in found_links:
-            clean_link = link.split('?')[0] 
+            clean_link = link.split('?')[0]
             if len(clean_link.split('/')) >= 4 and not clean_link.endswith('/home'): return clean_link
         return ""
     except Exception:
         return ""
 
-
 def _clean_extracted_text(text: str) -> str:
     if not text:
         return ""
-    # 1. Strip markdown images and links
+
     text = re.sub(r'!\[[^\]]*\]\([^)]*\)', ' ', str(text or ''))
     text = re.sub(r'\[([^\]]+)\]\([^)]*\)', r'\1', text)
 
-    # 2. Strip social share bar patterns (e.g. แชร์บทความนี้ Facebook Twitter LinkedIn Messenger WhatsApp Line)
     social_words = r'(แชร์บทความนี้|แชร์บทความ|แชร์เรื่องนี้|แชร์ต่อ|แชร์ไปยัง|แชร์โพสต์|แชร์|คัดลอกลิงก์|facebook|twitter|x\.com|linkedin|messenger|whatsapp|line|telegram|pinterest|threads|tiktok|instagram|copy link)'
     text = re.sub(rf'(?:{social_words}[\s,\|/•·-]*){{2,}}', ' ', text, flags=re.IGNORECASE)
 
-    # 3. Strip common Thai news boilerplate prefixes & noise lines
     boilerplate_phrases = [
         r'แชร์บทความนี้\s*',
         r'แชร์บทความ\s*',
@@ -432,7 +428,6 @@ def _clean_extracted_text(text: str) -> str:
     text = re.sub(r'\s+', ' ', text).strip()
     return text[:12000]
 
-
 def _article_json_ld_candidates(value):
     candidates = []
     if isinstance(value, list):
@@ -451,7 +446,6 @@ def _article_json_ld_candidates(value):
                 candidates.append(f"{headline}\n{body}".strip())
     return candidates
 
-
 def _content_quality_score(text: str) -> float:
     text = _clean_extracted_text(text)
     if not text:
@@ -465,19 +459,16 @@ def _content_quality_score(text: str) -> float:
     ))
     return length_score + sentence_score - (boilerplate_hits * 120)
 
-
 def _extract_article_text_from_html(html: str) -> str:
     soup = BeautifulSoup(html or '', 'html.parser')
     candidates = []
 
-    # 1. Extract headline (h1 or OpenGraph title)
     h1_tag = soup.find('h1')
     headline = h1_tag.get_text(strip=True) if h1_tag else ""
     if not headline:
         og_title = soup.find('meta', property='og:title')
         headline = og_title.get('content', '').strip() if og_title else ""
 
-    # 2. Check JSON-LD structured data first
     for script in soup.find_all('script', attrs={'type': 'application/ld+json'}):
         try:
             candidates.extend(
@@ -487,7 +478,6 @@ def _extract_article_text_from_html(html: str) -> str:
         except Exception:
             pass
 
-    # 3. Strip tags and common advertising/social/recommended widgets
     for element in soup(["script", "style", "nav", "header", "footer", "aside", "noscript", "form", "button", "iframe", "svg"]):
         element.extract()
 
@@ -537,7 +527,7 @@ def _extract_article_text_from_html(html: str) -> str:
 
 def fetch_with_fallback(url: str) -> str:
     anti_bot_patterns = r'(cloudflare|500 internal server error|403 forbidden|access denied|captcha|not acceptable|checking your browser|security check|just a moment|log in to facebook|เข้าสู่ระบบ|error 404|404 not found|page not found|ไม่พบหน้านี้|ไม่พบเนื้อหา|content not found|this page isn\'t available|หน้านี้ไม่พร้อมใช้งาน|อาจเสียหรือถูกลบไปแล้ว)'
-    
+
     def fetch_native():
         try:
             res = requests.get(url, impersonate="chrome", timeout=SCRAPER_TIMEOUT, allow_redirects=True)
@@ -545,7 +535,7 @@ def fetch_with_fallback(url: str) -> str:
                 content_len = res.headers.get('Content-Length')
                 if content_len and int(content_len) > MAX_RESPONSE_SIZE:
                     return None
-                    
+
                 if res.encoding is None or res.encoding.lower() == 'iso-8859-1':
                     res.encoding = res.apparent_encoding or 'utf-8'
                 clean_text = _extract_article_text_from_html(res.text)
@@ -575,7 +565,7 @@ def fetch_with_fallback(url: str) -> str:
             response = requests.get(jina_url, impersonate="chrome", headers={"Accept": "text/plain", "X-Retain-Images": "none"}, timeout=SCRAPER_TIMEOUT)
             if response.status_code == 200:
                 content = _clean_extracted_text(response.text)
-                if len(content.strip()) > 80 and not re.search(anti_bot_patterns, content, re.IGNORECASE): 
+                if len(content.strip()) > 80 and not re.search(anti_bot_patterns, content, re.IGNORECASE):
                     return content
         except Exception:
             pass
@@ -608,7 +598,7 @@ def fetch_with_fallback(url: str) -> str:
                 candidates.append(res)
         if candidates:
             return max(candidates, key=_content_quality_score)
-                
+
     return ""
 
 def is_gambling_content(text: str, domain: str = "") -> bool:
@@ -616,10 +606,10 @@ def is_gambling_content(text: str, domain: str = "") -> bool:
     whitelist = ['thairath.co.th', 'khaosod.co.th', 'matichon.co.th', 'dailynews.co.th', 'prachachat.net', 'bangkokbiznews.com', 'mgronline.com', 'thaipbs.or.th', 'pptvhd36.com', 'ch7.com', 'thestandard.co', 'workpointtoday.com', 'amarintv.com', 'nationtv.tv', 'tnnthailand.com', 'springnews.co.th', '77kaoded.com', 'voathai.com', 'xinhuathai.com']
     if any(w in domain.lower() for w in whitelist):
         return False
-        
+
     scam_keywords = r'(สล็อต|บาคาร่า|เว็บตรง|pg slot|คาสิโน|แทงบอล|หวยออนไลน์|ฝากถอนไม่มีขั้นต่ำ|แตกง่าย|ปั่นสล็อต|เครดิตฟรี|เว็บพนัน|สล็อตออนไลน์|แชร์ลูกโซ่|ขายตรง.*รายได้|ลงทุน.*การันตี|airdrop.*ฟรี|crypto.*ฟรี)'
     matches = re.findall(scam_keywords, text, re.IGNORECASE)
-    
+
     if len(matches) >= 3:
         return True
     return False
@@ -633,7 +623,7 @@ THAI_MONTHS_MAP = {
 
 def parse_relative_or_explicit_date(text: str) -> tuple:
     """Parse relative timestamps or explicit dates from Thai news text.
-    
+
     Returns (iso_date_str, display_thai_str, is_fresh_news)
     """
     from datetime import datetime, timedelta
@@ -644,7 +634,6 @@ def parse_relative_or_explicit_date(text: str) -> tuple:
     if not text_clean:
         return None, "ไม่ระบุในข้อความ", False
 
-    # 1. Thai explicit date (e.g. "25 มิถุนายน 2569", "25 มิ.ย. 69", "25 June 2026")
     thai_date_match = re.search(r'(\d{1,2})\s*(ม\.ค\.|มกราคม|ก\.พ\.|กุมภาพันธ์|มี\.ค\.|มีนาคม|เม\.ย\.|เมษายน|พ\.ค\.|พฤษภาคม|มิ\.ย\.|มิถุนายน|ก\.ค\.|กรกฎาคม|ส\.ค\.|สิงหาคม|ก\.ย\.|กันยายน|ต\.ค\.|ตุลาคม|พ\.ย\.|พฤศจิกายน|ธ\.ค\.|ธันวาคม)\s*(\d{2,4})', text_clean)
     if thai_date_match:
         day = int(thai_date_match.group(1))
@@ -665,7 +654,6 @@ def parse_relative_or_explicit_date(text: str) -> tuple:
         except Exception:
             pass
 
-    # 2. Specific Relative Time (e.g. "5 นาทีที่แล้ว", "2 ชั่วโมงก่อน", "3 วันที่แล้ว")
     rel_match = re.search(r'(\d+)\s*(วินาที|นาที|ชั่วโมง|ชม\.|วัน|สัปดาห์|เดือน|ปี)\s*(ที่แล้ว|ก่อน)', text_clean, re.IGNORECASE)
     if rel_match:
         val = int(rel_match.group(1))
@@ -680,7 +668,6 @@ def parse_relative_or_explicit_date(text: str) -> tuple:
             dt = now - timedelta(weeks=val)
             return dt.strftime("%Y-%m-%d"), f"{val} สัปดาห์ก่อน", False
 
-    # 3. Relative "เมื่อวาน" or explicit post marker for "วันนี้"
     if re.search(r'เมื่อวาน(นี้)?', text_clean):
         dt = now - timedelta(days=1)
         return dt.strftime("%Y-%m-%d"), "เมื่อวานนี้", True
@@ -711,10 +698,10 @@ def extract_text_from_url(url: str) -> dict:
         VIDEO_PATTERNS = [
             r'youtube\.com/watch', r'youtu\.be', r'youtube\.com/shorts',
             r'tiktok\.com', r'vt\.tiktok\.com', r'vm\.tiktok\.com',
-            r'facebook\.com/.*/videos/', r'/share/v/', r'/share/r/', 
+            r'facebook\.com/.*/videos/', r'/share/v/', r'/share/r/',
             r'vimeo\.com', r'dailymotion\.com'
         ]
-        
+
         if any(re.search(p, url.lower()) for p in VIDEO_PATTERNS):
             return {"error": "VIDEO_DETECTED"}
 
@@ -731,43 +718,43 @@ def extract_text_from_url(url: str) -> dict:
 
         social_domains = ["facebook.com", "fb.watch", "x.com", "twitter.com", "tiktok.com", "instagram.com"]
         is_social = any(d in domain.lower() for d in social_domains)
-        
+
         content = ""
         actual_primary_url = url
-        
+
         if is_social:
             content = extract_social_metadata(url)
             if content and is_gambling_content(content, domain):
                 return {"error": "GAMBLING_DETECTED"}
-                
+
             if "PLATFORM_BLOCKED" in content or "SCRAPE_FAILED" in content:
                 fallback_content = fetch_with_fallback(actual_primary_url)
                 if fallback_content: content = fallback_content
-                
+
             hidden_news_url = force_extract_news_link(url)
             if hidden_news_url:
                 actual_primary_url = hidden_news_url
                 actual_news_content = fetch_with_fallback(actual_primary_url)
-                
+
                 if actual_news_content:
                     final_content = f"[พรีวิวจากโซเชียล]:\n{content}\n\n[เนื้อหาข่าวจริงที่ซ่อนอยู่ ({actual_primary_url})]:\n{actual_news_content}"
-                    if is_gambling_content(final_content, urlparse(actual_primary_url).netloc): 
+                    if is_gambling_content(final_content, urlparse(actual_primary_url).netloc):
                         return {"error": "GAMBLING_DETECTED"}
                     return {"content": final_content, "actual_url": actual_primary_url}
-            
+
             if "PLATFORM_BLOCKED" in content or "SCRAPE_FAILED" in content:
                 return {"error": "PLATFORM_BLOCKED"}
-                
+
             return {"content": content, "actual_url": actual_primary_url}
-            
+
         else:
             actual_news_content = fetch_with_fallback(url)
             if actual_news_content:
-                if is_gambling_content(actual_news_content, domain): 
+                if is_gambling_content(actual_news_content, domain):
                     return {"error": "GAMBLING_DETECTED"}
                 return {"content": actual_news_content, "actual_url": url}
             else:
                 return {"error": "SCRAPE_FAILED"}
-                
+
     except Exception:
         return {"error": "SCRAPE_FAILED"}

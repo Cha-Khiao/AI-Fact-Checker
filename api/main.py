@@ -7,7 +7,6 @@ Run with: uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
 import sys
 import os
 
-# Ensure parent directory (project root) is on sys.path for absolute imports
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(CURRENT_DIR)
 if ROOT_DIR not in sys.path:
@@ -32,13 +31,13 @@ app = FastAPI(
     version="2.0.0"
 )
 
-# Enable CORS for Next.js and external frontends
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 class FactCheckRequest(BaseModel):
@@ -91,12 +90,11 @@ async def factcheck_stream(request: FactCheckRequest):
         def worker():
             try:
                 res = run_factcheck_pipeline(input_text, progress_callback=progress_cb)
-                
-                # Format to match API standard response
+
                 result_dict = res.get("result", {})
                 score_val = result_dict.get("score", "N/A")
                 score_num = int(score_val) if str(score_val).isdigit() else 3
-                
+
                 api_formatted = {
                     "status": "success",
                     "input": {

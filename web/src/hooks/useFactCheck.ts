@@ -3,11 +3,7 @@
 import { useState, useCallback, useRef } from "react";
 import { FactCheckResult, HistoryItem } from "@/types";
 
-const getApiBase = () => {
-  const envUrl = process.env.NEXT_PUBLIC_API_URL;
-  if (!envUrl) return "http://localhost:8000";
-  return envUrl.replace(/\/+$/, "");
-};
+const API_BASE = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").replace(/\/+$/, "");
 
 const HISTORY_KEY = "ai_factcheck_history_v1";
 
@@ -77,12 +73,10 @@ export function useFactCheck() {
       setProgressPct(5);
       setProgressMessage("กำลังเริ่มต้นเชื่อมต่อระบบ AI...");
 
-      const apiBase = getApiBase();
       let streamSucceeded = false;
 
-      // 1. Try SSE Streaming first
       try {
-        const response = await fetch(`${apiBase}/api/factcheck/stream`, {
+        const response = await fetch(`${API_BASE}/api/factcheck/stream`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ input: cleanInput }),
@@ -142,13 +136,12 @@ export function useFactCheck() {
         console.warn("Streaming mode failed, attempting REST fallback...", err);
       }
 
-      // 2. Fallback to Standard REST if stream didn't complete
       if (!streamSucceeded && !controller.signal.aborted) {
         try {
           setProgressPct(50);
           setProgressMessage("กำลังประมวลผลผ่านช่องทางสำรอง...");
 
-          const res = await fetch(`${apiBase}/api/factcheck`, {
+          const res = await fetch(`${API_BASE}/api/factcheck`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ input: cleanInput }),
@@ -169,7 +162,7 @@ export function useFactCheck() {
             const errorMsg =
               restErr instanceof Error && restErr.message !== "Failed to fetch"
                 ? restErr.message
-                : `ไม่สามารถเชื่อมต่อไปยัง Backend (${apiBase}) ได้ กรุณาตรวจสอบว่าเซิร์ฟเวอร์ Render ทำงานอยู่ หรือตรวจสอบตัวแปร NEXT_PUBLIC_API_URL ใน Vercel`;
+                : `ไม่สามารถเชื่อมต่อไปยัง Backend (${API_BASE}) ได้ กรุณาตรวจสอบว่าเซิร์ฟเวอร์ Render ทำงานอยู่ หรือตรวจสอบตัวแปร NEXT_PUBLIC_API_URL ใน Vercel`;
             setError(errorMsg);
           }
         }
@@ -191,6 +184,14 @@ export function useFactCheck() {
     setError(null);
   }, []);
 
+  const restoreResult = useCallback((cached: FactCheckResult) => {
+    setLoading(false);
+    setError(null);
+    setProgressPct(100);
+    setProgressMessage("วิเคราะห์เสร็จสมบูรณ์!");
+    setResult(cached);
+  }, []);
+
   return {
     loading,
     progressPct,
@@ -200,6 +201,7 @@ export function useFactCheck() {
     history,
     checkNews,
     reset,
+    restoreResult,
     clearHistory,
   };
 }

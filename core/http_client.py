@@ -16,11 +16,9 @@ _adapter = HTTPAdapter(pool_connections=16, pool_maxsize=32, max_retries=0)
 _session.mount("https://", _adapter)
 _session.mount("http://", _adapter)
 
-
 def get_session() -> requests.Session:
     """Return the shared pooled session (reused across reruns/calls)."""
     return _session
-
 
 def split_timeout(read_timeout, connect_timeout: float = DEFAULT_CONNECT_TIMEOUT):
     """Return a ``(connect, read)`` timeout tuple bounding connect separately."""
@@ -30,7 +28,6 @@ def split_timeout(read_timeout, connect_timeout: float = DEFAULT_CONNECT_TIMEOUT
         read_value = DEFAULT_READ_TIMEOUT
     connect_value = min(float(connect_timeout), max(1.0, read_value))
     return (connect_value, read_value)
-
 
 def wall_clock_request(method: str, url: str, **kwargs) -> requests.Response:
     """Perform a request bounded by a TRUE wall-clock deadline."""
