@@ -5,22 +5,25 @@
 
 @layer base {
   :root {
+    --font-sarabun: 'Sarabun', 'TH Sarabun New', 'TH Sarabun PSK', sans-serif;
     --font-prompt: 'Prompt', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   }
 
   * {
-    font-family: var(--font-prompt), sans-serif;
+    font-family: var(--font-sarabun), 'TH Sarabun New', 'TH Sarabun PSK', 'Sarabun', var(--font-prompt), sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
 
   html {
     scroll-behavior: smooth;
+    scroll-padding-top: 80px;
+    font-size: 16px;
   }
 
   body {
-    font-family: var(--font-prompt), sans-serif;
-    @apply bg-slate-50 text-slate-900 antialiased dark:bg-[#070b14] dark:text-slate-100;
+    font-family: var(--font-sarabun), 'TH Sarabun New', 'TH Sarabun PSK', 'Sarabun', var(--font-prompt), sans-serif;
+    @apply bg-[#eef2f6] text-slate-900 antialiased dark:bg-[#0a0f1d] dark:text-slate-100;
   }
 }
 
@@ -37,19 +40,19 @@
   }
 }
 
-/* Modern Solid Clean Card Surface — 100% Solid & High Legibility */
+/* High-Contrast Dimensional Cards (Light & Vivid Dark Mode) */
 .solid-card,
 .glass-panel {
   background-color: #ffffff;
-  border: 1px solid #e2e8f0;
-  box-shadow: 0 10px 25px -5px rgba(15, 23, 42, 0.06), 0 8px 10px -6px rgba(15, 23, 42, 0.04);
+  border: 1px solid #cbd5e1;
+  box-shadow: 0 2px 5px rgba(15, 23, 42, 0.04), 0 12px 30px -4px rgba(15, 23, 42, 0.08);
 }
 
 .dark .solid-card,
 .dark .glass-panel {
-  background-color: #0f172a;
-  border: 1px solid #1e293b;
-  box-shadow: 0 10px 30px -5px rgba(0, 0, 0, 0.45), 0 8px 10px -6px rgba(0, 0, 0, 0.35);
+  background-color: #152238;
+  border: 1px solid #2d4166;
+  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.6), 0 16px 44px -4px rgba(0, 0, 0, 0.8);
 }
 
 /* Custom Scrollbars */

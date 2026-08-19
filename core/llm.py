@@ -26,8 +26,6 @@ def get_openrouter_api_key() -> str:
     load_dotenv(override=True)
     return os.getenv("OPENROUTER_API_KEY", "").strip()
 
-# Backwards compatibility alias
-# Backwards compatibility alias
 AI_MODEL = get_ai_model()
 OPENROUTER_API_KEY = get_openrouter_api_key()
 LLM_BACKEND = os.getenv("LLM_BACKEND", "openrouter").strip()
@@ -64,16 +62,16 @@ def clean_fact_text(text: str) -> str:
     if not text:
         return ""
     t = str(text)
-    # 1. Remove markdown headers like ###, ##, #
+
     t = re.sub(r'(?m)^\s*#{1,6}\s*', '', t)
     t = re.sub(r'#{1,6}\s*', '', t)
-    # 2. Remove citations like [อ้างอิง 1], (อ้างอิงที่ 1), [แหล่งอ้างอิงที่ 1], (แหล่งอ้างอิงที่ 1), [1], (อ้างอิง 1, 2)
+
     t = re.sub(r'\[\s*(?:แหล่ง)?(?:ข้อมูล)?อ้างอิง(?:ที่)?\s*[\d,\sและ-]+\s*\]', '', t, flags=re.IGNORECASE)
     t = re.sub(r'\(\s*(?:แหล่ง)?(?:ข้อมูล)?อ้างอิง(?:ที่)?\s*[\d,\sและ-]+\s*\)', '', t, flags=re.IGNORECASE)
     t = re.sub(r'\[\s*แหล่งที่\s*[\d,\sและ-]+\s*\]', '', t, flags=re.IGNORECASE)
     t = re.sub(r'\(\s*แหล่งที่\s*[\d,\sและ-]+\s*\)', '', t, flags=re.IGNORECASE)
     t = re.sub(r'\[\s*\d+\s*\]', '', t)
-    # 3. Clean up spaces and empty lines
+
     t = re.sub(r'[ \t]+', ' ', t)
     t = re.sub(r'\n\s*\n+', '\n\n', t)
     return t.strip()
@@ -88,20 +86,20 @@ def validate_ai_response(parsed_dict: dict, raw_output: str = "", force_error: b
         "relevant_ref_ids": [],
         "is_error": force_error
     }
-    
+
     if not isinstance(parsed_dict, dict) or not parsed_dict:
         if raw_output:
             template["comparative_analysis"] = f"❌ โครงสร้างข้อมูลผิดพลาด\n\n[Raw Data]:\n{raw_output[:500]}"
         template["is_error"] = True
         return template
-        
+
     try:
         score_str = str(parsed_dict.get("score", 3))
         numbers = re.findall(r'\d+', score_str)
         parsed_dict["score"] = max(1, min(5, int(numbers[0]))) if numbers else 3
     except (ValueError, TypeError, IndexError, KeyError):
         parsed_dict["score"] = 3
-        
+
     try:
         rel_val = parsed_dict.get("relevant_ref_ids", [])
         if isinstance(rel_val, list):
@@ -112,10 +110,9 @@ def validate_ai_response(parsed_dict: dict, raw_output: str = "", force_error: b
     except (ValueError, TypeError, KeyError):
         parsed_dict["relevant_ref_ids"] = []
 
-    # Clean text content to remove ### headers and citations like [อ้างอิง 1]
     parsed_dict["verdict_summary"] = clean_fact_text(parsed_dict.get("verdict_summary", ""))
     parsed_dict["comparative_analysis"] = clean_fact_text(parsed_dict.get("comparative_analysis", ""))
-    
+
     raw_supp = parsed_dict.get("supported_points", [])
     if isinstance(raw_supp, str): raw_supp = [raw_supp]
     cleaned_supp = [clean_fact_text(p) for p in raw_supp if clean_fact_text(p)]
@@ -171,7 +168,6 @@ def call_openrouter(prompt: str, system_msg: str, timeout: float = None, model: 
     parsed, _meta = _call_openrouter_with_meta(prompt, system_msg, timeout=timeout, model=model, max_tokens=max_tokens)
     return parsed
 
-
 def _call_openrouter_with_meta(prompt: str, system_msg: str, timeout: float = None, model: str = None, max_tokens: int = None):
     if timeout is None:
         timeout = _analyzer_default_timeout()
@@ -184,7 +180,7 @@ def _call_openrouter_with_meta(prompt: str, system_msg: str, timeout: float = No
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     provider_sort = os.getenv("OPENROUTER_PROVIDER_SORT", "throughput")
     target_model = model or get_ai_model()
-    
+
     payload = {
         "model": target_model,
         "messages": [{"role": "system", "content": system_msg}, {"role": "user", "content": prompt}],
@@ -197,7 +193,7 @@ def _call_openrouter_with_meta(prompt: str, system_msg: str, timeout: float = No
     }
     max_retries = 3
     last_error = None
-    
+
     for attempt in range(max_retries):
         try:
             res = http_client.wall_clock_request(
@@ -208,7 +204,7 @@ def _call_openrouter_with_meta(prompt: str, system_msg: str, timeout: float = No
             data = res.json()
             if "choices" not in data or not data["choices"]:
                 raise ValueError("OpenRouter returned no choices/model available")
-                
+
             choice = data["choices"][0]
             content = choice.get("message", {}).get("content", "")
             finish_reason = choice.get("finish_reason")
@@ -223,16 +219,15 @@ def _call_openrouter_with_meta(prompt: str, system_msg: str, timeout: float = No
             last_error = e
             err_str = str(e)
             logger.error(f"OpenRouter API Error (Attempt {attempt+1}/{max_retries}): {e}")
-            
+
             if "402" in err_str or "Payment Required" in err_str:
                 return {}, {"error": err_str, "truncated": False, "payment_required": True}
-            
+
             if attempt < max_retries - 1:
                 time.sleep(2 ** attempt)
-                
+
     err_str = str(last_error)
     return {}, {"error": err_str, "truncated": False, "payment_required": False}
-
 
 THAI_MONTHS_MAP = {
     'ม.ค.': 1, 'มกราคม': 1, 'ก.พ.': 2, 'กุมภาพันธ์': 2, 'มี.ค.': 3, 'มีนาคม': 3,
@@ -301,23 +296,19 @@ def parse_relative_or_explicit_date(text: str) -> tuple:
 
     return None, "ไม่ระบุในข้อความ", False
 
-
 def analyze_intent_and_plan_search(news_text: str, timeout: float = None) -> tuple:
     text_for_analysis = news_text
-    if "]:\n" in news_text: 
-        text_for_analysis = news_text.split("]:\n")[-1] 
-        
     text_chunk = sanitize_for_api(text_for_analysis[:1500])
     tz = pytz.timezone('Asia/Bangkok')
     current_year_th = datetime.now(tz).year + 543
     if timeout is None:
         timeout = _planner_timeout()
-    
+
     current_date_str = datetime.now(tz).strftime("วันที่ %d %B พ.ศ. %Y เวลา %H:%M น.")
     det_iso, det_display, is_fresh = parse_relative_or_explicit_date(text_chunk)
     post_time_hint = f"ตรวจพบเวลาของโพสต์/ข่าวในข้อความ: {det_display}" if det_display else "เวลาของโพสต์/ข่าว: ไม่ได้ระบุวันที่ชัดเจน (ให้วิเคราะห์จากบริบท)"
 
-    prompt = f"""ข้อความที่ต้องการตรวจสอบ: 
+    prompt = f"""ข้อความที่ต้องการตรวจสอบ:
 "{text_chunk}"
 
 บริบทเวลา:
@@ -369,7 +360,6 @@ def analyze_intent_and_plan_search(news_text: str, timeout: float = None) -> tup
     )
     return _normalize_planner_response(res_data, text_chunk, current_year_th)
 
-
 _PLATFORM_WORDS = {
     'facebook', 'fb', 'instagram', 'ig', 'tiktok', 'twitter', 'x', 'youtube',
     'line', 'threads', 't.me', 'telegram', 'wechat', 'snapchat', 'pinterest',
@@ -396,7 +386,6 @@ _GENERIC_WORDS = {
     'พ่อ', 'น้อง', 'พี่', 'ลุง', 'ป้า', 'ตา', 'ยาย',
 }
 
-
 def _sanitize_keywords(keywords: list) -> list:
     cleaned = []
     seen = set()
@@ -410,7 +399,7 @@ def _sanitize_keywords(keywords: list) -> list:
             continue
         if any(nw in k_lower for nw in ['แชร์บทความนี้', 'แชร์บทความ', 'คัดลอกลิงก์', 'messenger', 'linkedin', 'whatsapp']):
             continue
-        # Ignore standalone 1-2 digit numbers (like 21, 00 from clock times)
+
         if re.match(r'^\d{1,2}$', k):
             continue
         if len(k) > 30:
@@ -420,7 +409,6 @@ def _sanitize_keywords(keywords: list) -> list:
         seen.add(k_lower)
         cleaned.append(k)
     return cleaned
-
 
 def _validate_keywords_against_text(keywords: list, text: str) -> list:
     if not text:
@@ -435,16 +423,14 @@ def _validate_keywords_against_text(keywords: list, text: str) -> list:
             valid.append(kw)
     return valid
 
-
 def _extract_numeric_keywords(text: str) -> list:
     nums = re.findall(r'(\d[\d,]*\s*(?:บาท|%|ปี|วัน|เดือน|ล้าน|พัน|หมื่น|แสน|ครั้ง|คน|ราย|จุด|ดอลลาร์|เหรียญ|ล้านบาท))', text, re.IGNORECASE)
     return [n.strip() for n in dict.fromkeys(nums)]
 
-
 def _fallback_keywords(text: str, current_keywords: list, exact_quote: str = "") -> list:
     result = list(current_keywords)
     seen = {k.lower() for k in result}
-    
+
     if exact_quote and len(exact_quote) > 10:
         text_clean = re.sub(r'https?://\S+', ' ', exact_quote)
     else:
@@ -454,9 +440,9 @@ def _fallback_keywords(text: str, current_keywords: list, exact_quote: str = "")
         if num.lower() not in seen:
             result.append(num)
             seen.add(num.lower())
-            
+
     noise_set = _PLATFORM_WORDS | _NOISE_WORDS | _GENERIC_WORDS
-    
+
     if len(result) < 8:
         word_re = re.compile(r'[\u0E00-\u0E7FA-Za-z0-9]{2,30}')
         for m in word_re.findall(text_clean):
@@ -468,18 +454,17 @@ def _fallback_keywords(text: str, current_keywords: list, exact_quote: str = "")
                 break
     return result[:10]
 
-
 def _normalize_planner_response(res_data: dict, text_chunk: str, current_year_th: str) -> dict:
     action = "SEARCH"
     content_type = str(res_data.get("content_type", "NEWS_CLAIM")).upper().strip()
     if content_type not in ("PERSONAL_STORY", "NEWS_CLAIM", "POLICY_ANNOUNCEMENT", "GENERAL"):
         content_type = "NEWS_CLAIM"
-    
+
     topic_keywords = res_data.get("topic_keywords", "")
     if isinstance(topic_keywords, list):
         topic_keywords = " ".join([str(q) for q in topic_keywords])
     topic_keywords = str(topic_keywords)
-    
+
     exact_quote = res_data.get("exact_quote", "")
     if not exact_quote.strip() or len(exact_quote) < 5:
         exact_quote = text_chunk[:100].replace('\n', ' ')
@@ -507,27 +492,27 @@ def _normalize_planner_response(res_data: dict, text_chunk: str, current_year_th
     clean_query = re.sub(r'\s+', ' ', clean_query).strip()
     if len(clean_query) < 3 or len(clean_query.split()) > 10:
         clean_query = " ".join(core_entities[:5]) if core_entities else text_chunk[:80]
-    
+
     locations = res_data.get("locations", [])
     if isinstance(locations, str): locations = [locations]
     locations = [str(l).strip() for l in locations if str(l).strip()]
-    
+
     content_timeline = str(res_data.get("content_timeline", res_data.get("timeline", "ไม่ระบุ"))).strip()
     publish_date_context = str(res_data.get("publish_date_context", "ไม่ระบุ")).strip()
     topic_summary = str(res_data.get("topic_summary", "เปรียบเทียบและวิเคราะห์เนื้อหา")).strip()
-    
+
     det_iso, det_display, is_fresh = parse_relative_or_explicit_date(text_chunk)
     if det_display and det_display != "ไม่ระบุในข้อความ":
         publish_date_context = det_display
         if content_timeline in ["ไม่ระบุ", "", "N/A"] or not re.search(r'\b(25\d{2}|20\d{2})\b', content_timeline):
             content_timeline = det_display
-    
+
     core_keywords_formal = res_data.get("core_keywords_formal", [])
     if isinstance(core_keywords_formal, str): core_keywords_formal = [core_keywords_formal]
     core_keywords_formal = [str(k).strip() for k in core_keywords_formal if str(k).strip()]
     if content_type == "PERSONAL_STORY":
         core_keywords_formal = []
-    
+
     return {
         "action": action,
         "search_query": clean_query,
@@ -544,7 +529,6 @@ def _normalize_planner_response(res_data: dict, text_chunk: str, current_year_th
         "is_fresh_news": is_fresh
     }
 
-
 def _build_analyzer_ref_text(references: list, max_refs: int = 10, max_chars: int = 1000) -> str:
     if not references:
         return "ไม่มีอ้างอิง"
@@ -557,7 +541,6 @@ def _build_analyzer_ref_text(references: list, max_refs: int = 10, max_chars: in
             f"[อ้างอิง {i+1}]: {r.get('title', '')} | วันที่: {r.get('pub_date', 'ไม่ระบุ')}\nเนื้อหา: {snippet}"
         )
     return "\n\n".join(parts)
-
 
 def _build_analyzer_prompt(clean_claim: str, origin_info: str, ref_text: str, current_time_context: str, content_type: str = "NEWS_CLAIM", content_timeline: str = "ไม่ระบุ", publish_date_context: str = "ไม่ระบุ"):
     system_msg = "You are a Senior Fact-Checking Journalist & Ombudsman. STRICTLY THAI LANGUAGE ONLY. DO NOT OUTPUT CHINESE CHARACTERS. Write clear, professional, in-depth, citizen-friendly explanations in THAI. Output strictly valid JSON."
@@ -621,7 +604,6 @@ def _build_analyzer_prompt(clean_claim: str, origin_info: str, ref_text: str, cu
     "score": ตัวเลข 1-5
 }}"""
     return system_msg, prompt
-
 
 def analyze_fact_checking(news_text: str, references: list, current_date_str: str, source_url: str = "", timeout: float = None, content_type: str = "NEWS_CLAIM", content_timeline: str = "ไม่ระบุ", publish_date_context: str = "ไม่ระบุ") -> dict:
     if timeout is None:
