@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { Fade } from "react-awesome-reveal";
+import { Fade } from "@/components/Fade";
 import { CaretDown, Question } from "@phosphor-icons/react";
 
 const faqs = [
