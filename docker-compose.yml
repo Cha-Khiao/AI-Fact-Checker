@@ -1,0 +1,28 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - AI_MODEL=${AI_MODEL:-google/gemini-2.5-flash}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - EXA_API_KEY=${EXA_API_KEY}
+      - SERPER_API_KEY=${SERPER_API_KEY}
+      - GSHEETS_WEBHOOK_URL=${GSHEETS_WEBHOOK_URL}
+      - FACTCHECK_DEADLINE_SECONDS=45
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    depends_on:
+      - backend
+    restart: unless-stopped

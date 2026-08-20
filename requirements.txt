@@ -1,6 +1,8 @@
-streamlit
 requests
 beautifulsoup4
 python-dotenv
 pytz
 curl_cffi
+fastapi
+uvicorn
+pydantic

@@ -318,5 +318,38 @@ class TestEntityDiscriminatorAndYearPrecision(unittest.TestCase):
         self.assertGreaterEqual(score, 80.0)
 
 
+class TestUrlFirstAndFallbackLogic(unittest.TestCase):
+    def test_fallback_to_text_when_scrape_fails(self):
+        from unittest.mock import patch
+        from core.pipeline import run_factcheck_pipeline
+        
+        with patch("core.pipeline.extract_text_from_url", return_value="SCRAPE_FAILED"):
+            with patch("core.pipeline.analyze_intent_and_plan_search") as mock_plan:
+                mock_plan.return_value = {"topic_keywords": "เงินดิจิทัล", "search_query": "เงินดิจิทัล 10000 บาท", "action": "SEARCH"}
+                mock_analyzer = lambda *args, **kwargs: {"verdict_summary": "ทดสอบเงินดิจิทัล", "score": 4}
+                res = run_factcheck_pipeline(
+                    "https://unreachable.site/news123 รัฐบาลประกาศจ่ายเงินดิจิทัล 10000 บาท",
+                    search_func=lambda *args, **kwargs: [],
+                    analyze_func=mock_analyzer
+                )
+                self.assertEqual(res.get("result", {}).get("score"), 4)
+
+    def test_url_first_priority_when_scrape_succeeds(self):
+        from unittest.mock import patch
+        from core.pipeline import run_factcheck_pipeline
+        
+        mock_article = "เนื้อหาข่าวจริงเกี่ยวกับราคาทองคำวันนี้พุ่งสูงขึ้นอย่างต่อเนื่อง"
+        with patch("core.pipeline.extract_text_from_url", return_value=mock_article):
+            with patch("core.pipeline.analyze_intent_and_plan_search") as mock_plan:
+                mock_plan.return_value = {"topic_keywords": "ราคาทองคำ", "search_query": "ราคาทองคำ", "action": "SEARCH"}
+                mock_analyzer = lambda *args, **kwargs: {"verdict_summary": "ราคาทองคำจริง", "score": 5}
+                res = run_factcheck_pipeline(
+                    "https://valid-news.com/gold ข่าวเรื่องเงินดิจิทัล",
+                    search_func=lambda *args, **kwargs: [],
+                    analyze_func=mock_analyzer
+                )
+                self.assertEqual(res.get("result", {}).get("score"), 5)
+
+
 if __name__ == "__main__":
     unittest.main()
