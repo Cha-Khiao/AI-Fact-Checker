@@ -19,20 +19,14 @@ import Footer from "@/components/landing/Footer";
 import ScrollToTop from "@/components/ScrollToTop";
 import GuardrailModal from "@/components/GuardrailModal";
 import { WelcomeModal } from "@/components/WelcomeModal";
-<<<<<<< HEAD
 import { SecretTeamModal } from "@/components/SecretTeamModal";
-=======
->>>>>>> origin/dev
 import { validateFactCheckInput, GuardrailViolation } from "@/lib/guardrail";
 
 export default function Home() {
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<"url" | "text">("url");
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
-<<<<<<< HEAD
   const [isTeamModalOpen, setIsTeamModalOpen] = useState(false);
-=======
->>>>>>> origin/dev
   const [guardrailViolation, setGuardrailViolation] = useState<GuardrailViolation | null>(null);
   const [inputQuery, setInputQuery] = useState("");
 
@@ -80,10 +74,7 @@ export default function Home() {
       <Navbar
         onOpenHistory={() => setIsHistoryOpen(true)}
         historyCount={history.length}
-<<<<<<< HEAD
         onOpenTeamModal={() => setIsTeamModalOpen(true)}
-=======
->>>>>>> origin/dev
         onReset={() => {
           setInputQuery("");
           window.scrollTo({ top: 0, behavior: "smooth" });
@@ -137,14 +128,11 @@ export default function Home() {
         />
       )}
 
-<<<<<<< HEAD
       <SecretTeamModal
         isOpen={isTeamModalOpen}
         onClose={() => setIsTeamModalOpen(false)}
       />
 
-=======
->>>>>>> origin/dev
       <WelcomeModal />
       <ScrollToTop />
     </div>

@@ -1,10 +1,6 @@
 "use client";
 
-<<<<<<< HEAD
 import React, { useState, useRef, useEffect, useSyncExternalStore } from "react";
-=======
-import React, { useState, useSyncExternalStore } from "react";
->>>>>>> origin/dev
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useTheme } from "next-themes";
@@ -14,7 +10,6 @@ import {
   Sun,
   List,
   X,
-<<<<<<< HEAD
   CaretDown,
   Sparkle,
   BookOpen,
@@ -32,20 +27,12 @@ import {
 
 import { Logo } from "@/components/Logo";
 import { useHealthCheck } from "@/hooks/useHealthCheck";
-=======
-} from "@phosphor-icons/react";
-
-import { Logo } from "@/components/Logo";
->>>>>>> origin/dev
 
 interface NavbarProps {
   onOpenHistory: () => void;
   historyCount: number;
   onReset?: () => void;
-<<<<<<< HEAD
   onOpenTeamModal?: () => void;
-=======
->>>>>>> origin/dev
 }
 
 const emptySubscribe = () => () => {};
@@ -58,7 +45,6 @@ function useIsClient() {
   );
 }
 
-<<<<<<< HEAD
 export function Navbar({ onOpenHistory, historyCount, onReset, onOpenTeamModal }: NavbarProps) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
@@ -68,21 +54,6 @@ export function Navbar({ onOpenHistory, historyCount, onReset, onOpenTeamModal }
   const pathname = usePathname();
   const isHomePage = pathname === "/";
   const isDashboardPage = pathname === "/dashboard";
-=======
-const navLinks = [
-  { href: "#checker", label: "เครื่องมือตรวจสอบ" },
-  { href: "#how-it-works", label: "วิธีการใช้งาน" },
-  { href: "#features", label: "ฟีเจอร์หลัก" },
-  { href: "#sources", label: "แหล่งข่าวที่ใช้สืบค้น" },
-  { href: "#security", label: "ความปลอดภัยและมาตรฐาน" },
-  { href: "#faq", label: "คำถามที่พบบ่อย" },
-];
-
-export function Navbar({ onOpenHistory, historyCount, onReset }: NavbarProps) {
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const pathname = usePathname();
-  const isHomePage = pathname === "/";
->>>>>>> origin/dev
   const { theme, resolvedTheme, setTheme } = useTheme();
   const mounted = useIsClient();
   const currentTheme = mounted ? (resolvedTheme || theme) : "light";
@@ -94,7 +65,6 @@ export function Navbar({ onOpenHistory, historyCount, onReset }: NavbarProps) {
 
   const handleNavLinkClick = (e: React.MouseEvent<HTMLAnchorElement>, href: string) => {
     setMobileMenuOpen(false);
-<<<<<<< HEAD
     setOpenDropdown(null);
 
     if (href === "/dashboard") {
@@ -104,30 +74,18 @@ export function Navbar({ onOpenHistory, historyCount, onReset }: NavbarProps) {
     if (isHomePage) {
       e.preventDefault();
       if (href === "#checker" || href === "#" || href === "/#checker") {
-=======
-
-    if (isHomePage) {
-      e.preventDefault();
-      if (href === "#checker" || href === "#") {
->>>>>>> origin/dev
         window.scrollTo({ top: 0, behavior: "smooth" });
         return;
       }
 
-<<<<<<< HEAD
       const targetId = href.replace("/#", "").replace("#", "");
       const element = document.getElementById(targetId);
-=======
-      const targetId = href.replace("#", "");
-      const element = document.getElementById(targetId) || document.querySelector(href);
->>>>>>> origin/dev
       if (element) {
         element.scrollIntoView({ behavior: "smooth", block: "start" });
       }
     }
   };
 
-<<<<<<< HEAD
   const handleMouseEnter = (menuKey: string) => {
     if (dropdownTimeoutRef.current) {
       clearTimeout(dropdownTimeoutRef.current);
@@ -390,39 +348,6 @@ export function Navbar({ onOpenHistory, historyCount, onReset }: NavbarProps) {
           )}
 
           {/* History Button */}
-=======
-  return (
-    <header className="sticky top-0 z-40 w-full glass-panel transition-colors border-b border-slate-200/80 dark:border-[#2b446b]/80">
-      <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-6">
-        <Link
-          href="/#checker"
-          onClick={(e) => {
-            if (isHomePage) {
-              e.preventDefault();
-              onReset?.();
-              window.scrollTo({ top: 0, behavior: "smooth" });
-            }
-          }}
-          className="group flex items-center text-left cursor-pointer transition-transform hover:scale-[1.02]"
-        >
-          <Logo size="md" />
-        </Link>
-
-        <nav className="hidden lg:flex items-center gap-5 text-xs font-semibold text-slate-600 dark:text-slate-300">
-          {navLinks.map((item) => (
-            <Link
-              key={item.href}
-              href={`/${item.href}`}
-              onClick={(e) => handleNavLinkClick(e, item.href)}
-              className="hover:text-blue-600 dark:hover:text-cyan-400 transition-colors py-1.5 px-2 rounded-lg hover:bg-slate-100/60 dark:hover:bg-slate-800/60"
-            >
-              {item.label}
-            </Link>
-          ))}
-        </nav>
-
-        <div className="flex items-center gap-2">
->>>>>>> origin/dev
           <button
             onClick={onOpenHistory}
             className="relative flex h-9 w-9 items-center justify-center rounded-xl bg-slate-100/90 dark:bg-slate-800/90 text-slate-700 dark:text-slate-200 border border-slate-200/60 dark:border-slate-700/60 hover:bg-slate-200 dark:hover:bg-slate-700 hover:text-blue-600 dark:hover:text-cyan-400 transition-all cursor-pointer shadow-xs"
@@ -436,10 +361,7 @@ export function Navbar({ onOpenHistory, historyCount, onReset }: NavbarProps) {
             )}
           </button>
 
-<<<<<<< HEAD
           {/* Theme Toggle Button */}
-=======
->>>>>>> origin/dev
           {mounted ? (
             <button
               type="button"
@@ -458,7 +380,6 @@ export function Navbar({ onOpenHistory, historyCount, onReset }: NavbarProps) {
             <div className="h-9 w-9" />
           )}
 
-<<<<<<< HEAD
           {/* Developer / Code Dropdown Menu Button */}
           <div
             className="relative"
@@ -531,8 +452,6 @@ export function Navbar({ onOpenHistory, historyCount, onReset }: NavbarProps) {
           </div>
 
           {/* Mobile Menu Hamburger Button */}
-=======
->>>>>>> origin/dev
           <button
             type="button"
             onClick={() => setMobileMenuOpen((v) => !v)}
@@ -544,7 +463,6 @@ export function Navbar({ onOpenHistory, historyCount, onReset }: NavbarProps) {
         </div>
       </div>
 
-<<<<<<< HEAD
       {/* Mobile Menu Drawer with Colors */}
       {mobileMenuOpen && (
         <div className="bg-white/95 dark:bg-[#10243d]/95 backdrop-blur-xl px-4 py-4 lg:hidden space-y-3 border-t border-slate-200/80 dark:border-[#2b446b] animate-in slide-in-from-top-2 duration-200">
@@ -656,20 +574,6 @@ export function Navbar({ onOpenHistory, historyCount, onReset }: NavbarProps) {
               <ArrowSquareOut size={13} weight="bold" className="text-slate-400" />
             </a>
           </div>
-=======
-      {mobileMenuOpen && (
-        <div className="bg-white/95 dark:bg-slate-900/95 backdrop-blur-md px-4 py-3 lg:hidden space-y-1 border-t border-slate-200/80 dark:border-[#2b446b]">
-          {navLinks.map((item) => (
-            <Link
-              key={item.href}
-              href={`/${item.href}`}
-              onClick={(e) => handleNavLinkClick(e, item.href)}
-              className="block rounded-xl px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-blue-600 dark:hover:text-cyan-400 transition-colors"
-            >
-              {item.label}
-            </Link>
-          ))}
->>>>>>> origin/dev
         </div>
       )}
     </header>

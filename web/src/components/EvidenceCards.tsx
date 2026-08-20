@@ -88,7 +88,6 @@ export function EvidencePointsCard({ verdict }: EvidenceCardsProps) {
   return (
     <div className="mb-6 grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6 items-start">
       <div
-<<<<<<< HEAD
         className={`rounded-3xl solid-card border-t-4 border-t-emerald-500 relative flex flex-col transition-all duration-300 ease-out hover:-translate-y-1 hover:border-emerald-400 hover:shadow-xl dark:shadow-[0_0_25px_rgba(16,185,129,0.12)] dark:hover:shadow-[0_0_30px_rgba(16,185,129,0.25)] bg-gradient-to-br from-emerald-500/5 via-teal-500/5 to-transparent dark:from-[#0f2824] dark:via-[#0c1f1e] dark:to-[#081518] overflow-hidden ${
           supported.length > 0 ? "p-5 sm:p-6" : "p-4 sm:p-4.5"
         }`}
@@ -100,16 +99,6 @@ export function EvidencePointsCard({ verdict }: EvidenceCardsProps) {
           <div className="flex items-center gap-3">
             <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-md shadow-emerald-500/30 ring-2 ring-emerald-400/40">
               <CheckCircle size={20} weight="fill" />
-=======
-        className={`rounded-3xl solid-card border-t-4 border-t-emerald-500 relative flex flex-col transition-all duration-300 ease-out hover:-translate-y-1 hover:border-emerald-500 hover:shadow-[0_0_20px_rgba(16,185,129,0.35)] dark:hover:border-emerald-400 dark:hover:shadow-[0_0_25px_2px_rgba(16,185,129,0.45)] ${
-          supported.length > 0 ? "p-5 sm:p-6" : "p-4 sm:p-4.5"
-        }`}
-      >
-        <div className={`flex items-center justify-between gap-3 ${supported.length > 0 ? "mb-4" : ""}`}>
-          <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-emerald-500/15 dark:bg-emerald-500/25 text-emerald-600 dark:text-emerald-400 ring-1 ring-emerald-500/40">
-              <CheckCircle size={22} weight="fill" />
->>>>>>> origin/dev
             </div>
             <h4 className="text-base font-bold text-slate-900 dark:text-white">
               ข้อเท็จจริงที่ได้รับการยืนยัน
@@ -130,17 +119,11 @@ export function EvidencePointsCard({ verdict }: EvidenceCardsProps) {
             renderItem={(point, idx) => (
               <li
                 key={idx}
-<<<<<<< HEAD
                 className="flex items-start gap-3 p-3.5 sm:p-4 rounded-2xl bg-gradient-to-br from-white/95 via-emerald-50/70 to-teal-50/50 dark:from-[#153833] dark:via-[#122e2b] dark:to-[#0d2220] border border-emerald-300/90 dark:border-emerald-500/50 hover:border-emerald-500 dark:hover:border-emerald-400 text-sm text-slate-900 dark:text-emerald-50 leading-relaxed font-medium transition-all duration-200 hover:shadow-md hover:-translate-y-0.5 shadow-xs dark:shadow-[0_4px_20px_rgba(16,185,129,0.12)] relative overflow-hidden"
               >
                 {/* Inner Emerald Light Beam */}
                 <div className="absolute top-0 left-0 right-0 h-[1.5px] bg-gradient-to-r from-transparent via-emerald-400/70 dark:via-emerald-300/50 to-transparent" />
                 <CheckCircle size={19} weight="fill" className="text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
-=======
-                className="flex items-start gap-3 p-3.5 rounded-2xl bg-emerald-50/60 dark:bg-[#132c30] border border-emerald-300/40 dark:border-emerald-600/30 text-sm text-slate-900 dark:text-emerald-50 leading-relaxed font-medium transition-colors hover:bg-emerald-50/90 dark:hover:bg-[#17383e]"
-              >
-                <CheckCircle size={18} weight="fill" className="text-emerald-500 dark:text-emerald-400 shrink-0 mt-0.5" />
->>>>>>> origin/dev
                 <span>{point}</span>
               </li>
             )}
@@ -149,7 +132,6 @@ export function EvidencePointsCard({ verdict }: EvidenceCardsProps) {
       </div>
 
       <div
-<<<<<<< HEAD
         className={`rounded-3xl solid-card border-t-4 border-t-rose-500 relative flex flex-col transition-all duration-300 ease-out hover:-translate-y-1 hover:border-rose-400 hover:shadow-xl dark:shadow-[0_0_25px_rgba(244,63,94,0.12)] dark:hover:shadow-[0_0_30px_rgba(244,63,94,0.25)] bg-gradient-to-br from-rose-500/5 via-red-500/5 to-transparent dark:from-[#2a131c] dark:via-[#200f16] dark:to-[#140a10] overflow-hidden ${
           conflicting.length > 0 ? "p-5 sm:p-6" : "p-4 sm:p-4.5"
         }`}
@@ -161,16 +143,6 @@ export function EvidencePointsCard({ verdict }: EvidenceCardsProps) {
           <div className="flex items-center gap-3">
             <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-gradient-to-br from-rose-500 to-red-600 text-white shadow-md shadow-rose-500/30 ring-2 ring-rose-400/40">
               <XCircle size={20} weight="fill" />
-=======
-        className={`rounded-3xl solid-card border-t-4 border-t-rose-500 relative flex flex-col transition-all duration-300 ease-out hover:-translate-y-1 hover:border-rose-500 hover:shadow-[0_0_20px_rgba(244,63,94,0.35)] dark:hover:border-rose-400 dark:hover:shadow-[0_0_25px_2px_rgba(244,63,94,0.45)] ${
-          conflicting.length > 0 ? "p-5 sm:p-6" : "p-4 sm:p-4.5"
-        }`}
-      >
-        <div className={`flex items-center justify-between gap-3 ${conflicting.length > 0 ? "mb-4" : ""}`}>
-          <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-rose-500/15 dark:bg-rose-500/25 text-rose-600 dark:text-rose-400 ring-1 ring-rose-500/40">
-              <XCircle size={22} weight="fill" />
->>>>>>> origin/dev
             </div>
             <h4 className="text-base font-bold text-slate-900 dark:text-white">
               จุดขัดแย้ง / ข้อหักล้าง
@@ -191,27 +163,17 @@ export function EvidencePointsCard({ verdict }: EvidenceCardsProps) {
             renderItem={(point, idx) => (
               <li
                 key={idx}
-<<<<<<< HEAD
                 className="flex items-start gap-3 p-3.5 sm:p-4 rounded-2xl bg-gradient-to-br from-white/95 via-rose-50/70 to-red-50/50 dark:from-[#3a1b2a] dark:via-[#301623] dark:to-[#220e18] border border-rose-300/90 dark:border-rose-500/50 hover:border-rose-500 dark:hover:border-rose-400 text-sm text-slate-900 dark:text-rose-50 leading-relaxed font-medium transition-all duration-200 hover:shadow-md hover:-translate-y-0.5 shadow-xs dark:shadow-[0_4px_20px_rgba(244,63,94,0.12)] relative overflow-hidden"
               >
                 {/* Inner Rose Light Beam */}
                 <div className="absolute top-0 left-0 right-0 h-[1.5px] bg-gradient-to-r from-transparent via-rose-400/70 dark:via-rose-300/50 to-transparent" />
                 <XCircle size={19} weight="fill" className="text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
-=======
-                className="flex items-start gap-3 p-3.5 rounded-2xl bg-rose-50/60 dark:bg-[#331824] border border-rose-300/40 dark:border-rose-600/30 text-sm text-slate-900 dark:text-rose-50 leading-relaxed font-medium transition-colors hover:bg-rose-50/90 dark:hover:bg-[#401e2e]"
-              >
-                <XCircle size={18} weight="fill" className="text-rose-500 dark:text-rose-400 shrink-0 mt-0.5" />
->>>>>>> origin/dev
                 <span>{point}</span>
               </li>
             )}
           />
         )}
       </div>
-<<<<<<< HEAD
-=======
-
->>>>>>> origin/dev
     </div>
   );
 }
@@ -221,7 +183,6 @@ export function ComparativeAnalysisCard({ verdict }: EvidenceCardsProps) {
   if (!analysis) return null;
 
   return (
-<<<<<<< HEAD
     <div className="rounded-3xl solid-card p-6 sm:p-8 mb-6 border-t-4 border-t-cyan-500 dark:border-t-cyan-400 relative transition-all duration-300 ease-out hover:-translate-y-1 hover:border-cyan-400 hover:shadow-xl dark:shadow-[0_0_30px_rgba(6,182,212,0.12)] dark:hover:shadow-[0_0_35px_rgba(6,182,212,0.25)] bg-gradient-to-br from-cyan-500/5 via-blue-500/5 to-transparent dark:from-[#0d2238] dark:via-[#0c1a2e] dark:to-[#081220] overflow-hidden">
       {/* Ambient Top Light Beam Effect */}
       <div className="absolute top-0 left-0 right-0 h-[2.5px] bg-gradient-to-r from-transparent via-cyan-400 dark:via-cyan-300 to-transparent shadow-[0_0_12px_rgba(6,182,212,0.8)]" />
@@ -247,16 +208,6 @@ export function ComparativeAnalysisCard({ verdict }: EvidenceCardsProps) {
             <span>AI Synthesized Analysis</span>
           </span>
         </div>
-=======
-    <div className="rounded-3xl solid-card p-6 sm:p-8 mb-6 border-t-4 border-t-cyan-500 relative transition-all duration-300 ease-out hover:-translate-y-1 hover:border-cyan-500 hover:shadow-[0_0_20px_rgba(6,182,212,0.35)] dark:hover:border-cyan-400 dark:hover:shadow-[0_0_25px_2px_rgba(6,182,212,0.45)]">
-      <div className="flex items-center gap-3 mb-5">
-        <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-cyan-500/15 dark:bg-cyan-500/25 text-cyan-600 dark:text-cyan-400 ring-1 ring-cyan-500/40">
-          <Scales size={22} weight="duotone" />
-        </div>
-        <h4 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white">
-          บทวิเคราะห์เปรียบเทียบเชิงลึก (Comparative Analysis)
-        </h4>
->>>>>>> origin/dev
       </div>
 
       <ExpandableText
@@ -264,7 +215,6 @@ export function ComparativeAnalysisCard({ verdict }: EvidenceCardsProps) {
         expandLabel="ดูบทวิเคราะห์ทั้งหมด"
         collapseLabel="ย่อบทวิเคราะห์"
       >
-<<<<<<< HEAD
         <div className="text-sm sm:text-base leading-relaxed space-y-4">
           {analysis.split("\n\n").map((para, i) => (
             <div
@@ -275,13 +225,6 @@ export function ComparativeAnalysisCard({ verdict }: EvidenceCardsProps) {
               <div className="absolute top-0 left-0 right-0 h-[1.5px] bg-gradient-to-r from-transparent via-cyan-400/70 dark:via-cyan-300/50 to-transparent" />
               {para}
             </div>
-=======
-        <div className="text-sm sm:text-base text-slate-800 dark:text-slate-100 leading-relaxed space-y-3.5">
-          {analysis.split("\n\n").map((para, i) => (
-            <p key={i} className="p-4 rounded-2xl bg-slate-50/80 dark:bg-[#13253d] border border-slate-200 dark:border-[#2b446b] font-medium leading-relaxed">
-              {para}
-            </p>
->>>>>>> origin/dev
           ))}
         </div>
       </ExpandableText>

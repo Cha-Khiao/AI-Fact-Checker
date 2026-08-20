@@ -6,11 +6,6 @@ import { getDemoFactCheckResult } from "@/lib/demoData";
 
 const API_BASE = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").replace(/\/+$/, "");
 
-<<<<<<< HEAD
-=======
-const API_BASE = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").replace(/\/+$/, "");
-
->>>>>>> origin/dev
 const HISTORY_KEY = "ai_factcheck_history_v1";
 
 export function useFactCheck() {
@@ -109,10 +104,7 @@ export function useFactCheck() {
 
       let streamSucceeded = false;
 
-<<<<<<< HEAD
       // 1. Try Live SSE Stream API from Backend
-=======
->>>>>>> origin/dev
       try {
         const response = await fetch(`${API_BASE}/api/factcheck/stream`, {
           method: "POST",
@@ -174,10 +166,7 @@ export function useFactCheck() {
         console.warn("Streaming mode failed, attempting REST fallback...", err);
       }
 
-<<<<<<< HEAD
       // 2. Try REST Fallback API from Backend
-=======
->>>>>>> origin/dev
       if (!streamSucceeded && !controller.signal.aborted) {
         try {
           setProgressPct(50);
@@ -199,7 +188,6 @@ export function useFactCheck() {
           setProgressMessage("วิเคราะห์เสร็จสมบูรณ์!");
           setResult(data);
           saveToHistory(data, cleanInput);
-<<<<<<< HEAD
           setLoading(false);
           return;
         } catch {
@@ -212,14 +200,6 @@ export function useFactCheck() {
 
           if (!controller.signal.aborted) {
             const errorMsg = `ไม่สามารถเชื่อมต่อไปยัง Backend (${API_BASE}) ได้ในขณะนี้\n💡 คุณสามารถคลิกเลือก "ตัวอย่างประเด็นทดสอบ (10 ตัวเลือก)" เพื่อทดลองระบบในโหมด Demo แบบออฟไลน์ได้ทันที 100% โดยไม่ต้องพึ่งพาเซิร์ฟเวอร์!`;
-=======
-        } catch (restErr: unknown) {
-          if (!(restErr instanceof Error) || restErr.name !== "AbortError") {
-            const errorMsg =
-              restErr instanceof Error && restErr.message !== "Failed to fetch"
-                ? restErr.message
-                : `ไม่สามารถเชื่อมต่อไปยัง Backend (${API_BASE}) ได้ กรุณาตรวจสอบว่าเซิร์ฟเวอร์ Render ทำงานอยู่ หรือตรวจสอบตัวแปร NEXT_PUBLIC_API_URL ใน Vercel`;
->>>>>>> origin/dev
             setError(errorMsg);
           }
         }
