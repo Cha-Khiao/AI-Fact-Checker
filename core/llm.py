@@ -148,6 +148,51 @@ def validate_ai_response(parsed_dict: dict, raw_output: str = "", force_error: b
     parsed_dict["ifcn_rating"] = ifcn_rating
     parsed_dict["ifcn_label_th"] = ifcn_label_th
     parsed_dict["confidence_pct"] = confidence_pct
+
+    # Disinformation Category Normalization
+    category_map = {
+        "FINANCIAL_SCAM": "การเงิน / หลอกลงทุน / กู้เงิน",
+        "HEALTH_MEDICINE": "สุขภาพ / ยา / อาหารเสริม",
+        "PUBLIC_POLICY_GOV": "นโยบายรัฐ / สวัสดิการ",
+        "DISASTER_SAFETY": "ภัยพิบัติ / อุบัติภัย / เตือนภัย",
+        "CELEBRITY_SOCIAL": "ข่าวบันเทิง / บุคคลสาธารณะ",
+        "GENERAL_MISINFO": "ข่าวสารทั่วไป / ข่าวลือโซเชียล"
+    }
+    raw_cat = str(parsed_dict.get("disinformation_category", "GENERAL_MISINFO")).upper().strip()
+    if raw_cat not in category_map:
+        raw_cat = "GENERAL_MISINFO"
+    parsed_dict["disinformation_category"] = raw_cat
+    parsed_dict["disinformation_category_label"] = category_map[raw_cat]
+
+    # Sub-claims Multi-Claim Breakdown Normalization
+    raw_subs = parsed_dict.get("sub_claims", [])
+    valid_subs = []
+    if isinstance(raw_subs, list):
+        for item in raw_subs:
+            if isinstance(item, dict) and item.get("claim_text"):
+                sub_score = item.get("score", score)
+                try:
+                    sub_score = max(1, min(5, int(re.findall(r'\d+', str(sub_score))[0])))
+                except Exception:
+                    sub_score = 3
+                
+                tier_labels = {
+                    5: "จริง (100%)",
+                    4: "จริงเป็นส่วนใหญ่ (75%)",
+                    3: "ก้ำกึ่ง/ยังไม่มีข้อยุติ (50%)",
+                    2: "บิดเบือน (25%)",
+                    1: "เท็จ/ข่าวปลอม (0%)"
+                }
+                valid_subs.append({
+                    "claim_text": clean_fact_text(str(item.get("claim_text", ""))),
+                    "score": sub_score,
+                    "verdict_tier": sub_score,
+                    "verdict_label": item.get("verdict_label") or tier_labels.get(sub_score, "ยังไม่มีข้อยุติ"),
+                    "detail": clean_fact_text(str(item.get("detail", "")))
+                })
+
+    parsed_dict["sub_claims"] = valid_subs
+
     parsed_dict["claim_review_schema"] = {
         "@context": "https://schema.org",
         "@type": "ClaimReview",
@@ -229,72 +274,13 @@ def _call_openrouter_with_meta(prompt: str, system_msg: str, timeout: float = No
     err_str = str(last_error)
     return {}, {"error": err_str, "truncated": False, "payment_required": False}
 
-THAI_MONTHS_MAP = {
-    'ม.ค.': 1, 'มกราคม': 1, 'ก.พ.': 2, 'กุมภาพันธ์': 2, 'มี.ค.': 3, 'มีนาคม': 3,
-    'เม.ย.': 4, 'เมษายน': 4, 'พ.ค.': 5, 'พฤษภาคม': 5, 'มิ.ย.': 6, 'มิถุนายน': 6,
-    'ก.ค.': 7, 'กรกฎาคม': 7, 'ส.ค.': 8, 'สิงหาคม': 8, 'ก.ย.': 9, 'กันยายน': 9,
-    'ต.ค.': 10, 'ตุลาคม': 10, 'พ.ย.': 11, 'พฤศจิกายน': 11, 'ธ.ค.': 12, 'ธันวาคม': 12
-}
-
-def parse_relative_or_explicit_date(text: str) -> tuple:
-    from datetime import datetime, timedelta
-    import pytz
-    tz = pytz.timezone('Asia/Bangkok')
-    now = datetime.now(tz)
-    text_clean = str(text or "").strip()
-    if not text_clean:
-        return None, "ไม่ระบุในข้อความ", False
-
-    thai_date_match = re.search(
-        r'(?:((?:คืน)?วัน(?:จันทร์|อังคาร|พุธ|พฤหัสบดี|พฤหัส|ศุกร์|เสาร์|อาทิตย์))\s*(?:ที่)?)?\s*(\d{1,2})\s*(ม\.ค\.|มกราคม|ก\.พ\.|กุมภาพันธ์|มี\.ค\.|มีนาคม|เม\.ย\.|เมษายน|พ\.ค\.|พฤษภาคม|มิ\.ย\.|มิถุนายน|ก\.ค\.|กรกฎาคม|ส\.ค\.|สิงหาคม|ก\.ย\.|กันยายน|ต\.ค\.|ตุลาคม|พ\.ย\.|พฤศจิกายน|ธ\.ค\.|ธันวาคม)\s*(\d{2,4})(?:\s*เวลา\s*(\d{1,2}[\.:]\d{2})\s*(?:น\.|น)?)?',
-        text_clean
-    )
-    if thai_date_match:
-        dow = (thai_date_match.group(1) or "").strip()
-        day = int(thai_date_match.group(2))
-        month_str = thai_date_match.group(3)
-        year_raw = int(thai_date_match.group(4))
-        time_str = (thai_date_match.group(5) or "").strip()
-        month = THAI_MONTHS_MAP.get(month_str, 1)
-        if year_raw < 100:
-            year = year_raw + 2500 - 543
-        elif year_raw > 2400:
-            year = year_raw - 543
-        else:
-            year = year_raw
-        try:
-            dt = datetime(year, month, day)
-            delta_days = (now.date() - dt.date()).days
-            is_fresh = delta_days <= 1
-            dow_str = f"{dow}ที่ " if dow else ""
-            time_display = f" เวลา {time_str} น." if time_str else ""
-            display_text = f"{dow_str}{day} {month_str} {year+543}{time_display}"
-            return dt.strftime("%Y-%m-%d"), display_text, is_fresh
-        except Exception:
-            pass
-
-    rel_match = re.search(r'(\d+)\s*(วินาที|นาที|ชั่วโมง|ชม\.|วัน|สัปดาห์|เดือน|ปี)\s*(ที่แล้ว|ก่อน)', text_clean, re.IGNORECASE)
-    if rel_match:
-        val = int(rel_match.group(1))
-        unit = rel_match.group(2)
-        if 'วินาที' in unit or 'นาที' in unit or 'ชั่วโมง' in unit or 'ชม.' in unit:
-            dt = now - timedelta(hours=val if ('ชั่วโมง' in unit or 'ชม.' in unit) else 0)
-            return dt.strftime("%Y-%m-%d"), f"{val} {unit}ที่แล้ว", True
-        elif 'วัน' in unit:
-            dt = now - timedelta(days=val)
-            return dt.strftime("%Y-%m-%d"), f"{val} วันก่อน", val <= 1
-        elif 'สัปดาห์' in unit:
-            dt = now - timedelta(weeks=val)
-            return dt.strftime("%Y-%m-%d"), f"{val} สัปดาห์ก่อน", False
-
-    if re.search(r'เมื่อวาน(นี้)?', text_clean):
-        dt = now - timedelta(days=1)
-        return dt.strftime("%Y-%m-%d"), "เมื่อวานนี้", True
-
-    if re.search(r'(โพสต์เมื่อ|เผยแพร่|อัปเดต)\s*:\s*วันนี้', text_clean):
-        return now.strftime("%Y-%m-%d"), "วันนี้", True
-
-    return None, "ไม่ระบุในข้อความ", False
+try:
+    from .date_utils import parse_thai_and_global_date as parse_relative_or_explicit_date
+except ImportError:
+    try:
+        from date_utils import parse_thai_and_global_date as parse_relative_or_explicit_date
+    except ImportError:
+        pass
 
 def analyze_intent_and_plan_search(news_text: str, timeout: float = None) -> tuple:
     text_for_analysis = news_text
@@ -570,22 +556,25 @@ def _build_analyzer_prompt(clean_claim: str, origin_info: str, ref_text: str, cu
    - **กรณีบิดเบือน (Distorted / Misleading):** แยกแยะให้ชัดว่าส่วนใดเป็นเรื่องจริง และส่วนใดที่ถูกแต่งเติม ตัดต่อบริบท หรือชี้นำผิดทิศทาง
    - **กรณีข่าวปลอม (False / Debunked):** ชี้แจงว่าสื่อหลัก/หน่วยงานทางการได้ออกมาปฏิเสธหรือเตือนภัยอย่างไรบ้าง
 
-2. 🚨 **กฎเหล็กการตรวจจับข่าวปลอม/การหักล้าง (Anti-Fake & Debunk Detection):**
-   - ถ้าแหล่งอ้างอิงมีคำว่า 'ข่าวปลอม', 'เตือนภัย', 'ชี้แจงไม่จริง', 'ปฏิเสธ', 'ไม่มีนโยบาย', 'แอบอ้าง' หรือเนื้อหาข่าวปฏิเสธข้อความของผู้ใช้ → ต้องให้ **คะแนน 1 (0% ข้อมูลเท็จ)** หรือ **2 (25% บิดเบือน)** ทันที! ห้ามมองว่าสอดคล้องเพียงเพราะมีคีย์เวิร์ดเรื่องเดียวกันเด็ดขาด!
-   - หากข้อความต้นฉบับไม่มีหลักฐานยืนยันจากสื่อหลักเลย และเป็นข่าวลือไร้ที่มา ให้คะแนน 1 หรือ 2 ตามระดับความเสียหาย
+2. 🚨 **กฎเหล็กการตรวจจับข่าวปลอมและการประเมินหลักฐาน (Strict Evidence & Debunk Protocol):**
+   - **กรณีพบการหักล้าง (Debunked / Contradiction):** ถ้าแหล่งอ้างอิงมีคำว่า 'ข่าวปลอม', 'เตือนภัย', 'ชี้แจงไม่จริง', 'ปฏิเสธ', 'ไม่มีนโยบาย', 'แอบอ้าง' หรือเนื้อหาข่าวปฏิเสธข้อความของผู้ใช้ → ต้องให้ **คะแนน 1 (0% ข้อมูลเท็จ / ข่าวปลอม)** หรือ **2 (25% บิดเบือน)** ทันที! ห้ามมองว่าสอดคล้องเพียงเพราะมีคีย์เวิร์ดเรื่องเดียวกันเด็ดขาด!
+   - **กฎข่าวใหม่สดๆ (Absence of Evidence is NOT Evidence of Falsehood):** หากเป็นข่าวด่วนใหม่ล่าสุด (Emerging Breaking News) ที่ยังไม่มีสื่อหลักลงยืนยัน และยังไม่มีหน่วยงานใดออกมาชี้แจงหักล้าง → **ห้ามด่วนตัดสินเป็นคะแนน 1 (ข่าวปลอม) หรือ 5 (จริง)** แต่ให้คะแนน **3 (50% ก้ำกึ่ง / ยังไม่มีข้อยุติ)** พร้อมระบุในบทวิเคราะห์ว่า *"เป็นประเด็นสดใหม่ที่ยังไม่มีการยืนยันหรือปฏิเสธอย่างเป็นทางการ โปรดรอการแถลงจากหน่วยงานที่เกี่ยวข้อง"*
+   - **กฎกระแสโซเชียล (Social Volume ≠ Truth):** การที่คนแชร์เยอะบนโซเชียลไม่ได้แปลว่าเป็นความจริง หากไม่มีเอกสาร แถลงการณ์ หรือสื่อหลักยืนยัน ให้จัดเป็นข่าวลือที่ยังไม่มีข้อยุติ (คะแนน 3) และหากหน่วยงานที่ถูกพาดพิงออกมาปฏิเสธ ให้ปรับเป็นคะแนน 1 ทันที
 
-3. ⚖️ **เกณฑ์การให้คะแนนความถูกต้อง (Score 1-5):**
+3. ⚖️ **เกณฑ์การให้คะแนนความถูกต้อง 5 ระดับ (Standard 5-Tier Scoring):**
    - **5 (100% จริง / สอดคล้องสมบูรณ์):** สื่อหลักหรือหน่วยงานทางการ >= 2 แห่ง ยืนยันว่าข้อความต้นฉบับเป็นความจริง ถูกต้องทุกรายละเอียด
    - **4 (75% จริงเป็นส่วนใหญ่):** ประเด็นหลักเป็นความจริง แต่อาจมีรายละเอียดปลีกย่อยหรือตัวเลขคลาดเคลื่อนเล็กน้อย
-   - **3 (50% ก้ำกึ่ง / มีเค้าโครงจริงบางส่วน):** สื่อหลักรายงานข้อมูลขัดแย้งกันเอง หรือหลักฐานยังไม่เพียงพอต่อการยืนยัน (เช่น ข่าวด่วนพึ่งเกิด)
-   - **2 (25% บิดเบือน / คลาดเคลื่อนจากข้อเท็จจริง):** มีความจริงบางส่วน แต่ส่วนสำคัญ (ตัวเลข, วันเวลา, บทบาทบุคคล) ถูกบิดเบือนไปจากข้อเท็จจริงของสื่อ
-   - **1 (0% เท็จ / ข่าวปลอม / ขัดแย้งสิ้นเชิง):** ข้อความเป็นข่าวปลอม ถูกหักล้างโดยสิ้นเชิง หรือไม่มีข้อมูลความจริงตามที่อ้างเลย
+   - **3 (50% ก้ำกึ่ง / ยังไม่มีข้อยุติ / อยู่ระหว่างตรวจสอบ):** เป็นข่าวด่วนสดใหม่ที่ยังไม่มีการแถลงยืนยัน หรือสื่อหลักรายงานข้อมูลขัดแย้งกันเอง หรือหลักฐานยังไม่เพียงพอต่อการชี้ขาด
+   - **2 (25% บิดเบือน / คลาดเคลื่อนจากข้อเท็จจริง):** มีความจริงบางส่วน แต่ส่วนสำคัญ (ตัวเลข, วันเวลา, บทบาทบุคคล) ถูกบิดเบือน ตัดต่อบริบท หรือชี้นำผิดทิศทาง
+   - **1 (0% เท็จ / ข่าวปลอม / ขัดแย้งสิ้นเชิง):** ข้อความเป็นข่าวปลอม ถูกหักล้างโดยสิ้นเชิง มีแถลงการณ์ปฏิเสธ หรือพิสูจน์แล้วว่าไม่มีมูลความจริงตามที่อ้างเลย
 
 4. 📋 **โครงสร้างการเขียนตอบใน JSON (ห้ามใช้ภาษาหุ่นยนต์):**
+   - `"disinformation_category"`: เลือก 1 หมวดหมู่ที่ตรงที่สุดจาก ("FINANCIAL_SCAM" | "HEALTH_MEDICINE" | "PUBLIC_POLICY_GOV" | "DISASTER_SAFETY" | "CELEBRITY_SOCIAL" | "GENERAL_MISINFO")
    - `"verdict_summary"`: สรุปผลฟันธงใน 1-2 ประโยคด้วยภาษาที่เข้าใจง่าย กระชับ ตรงไปตรงมา ชี้ชัดว่า "จริง / เท็จ / บิดเบือน" เพราะเหตุใด
    - `"comparative_analysis"`: เขียนบทวิเคราะห์เชิงลึก 3 มิติให้อ่านง่ายและชัดเจน (1. สิ่งที่เกิดขึ้นจริง 2. ประเด็นที่ต้องจับตา 3. ข้อควรระวัง) โดย **ห้ามใส่เครื่องหมายสัญลักษณ์หัวข้อ เช่น ### หรือ ##** และ **ห้ามใส่ข้อความอ้างอิง เช่น [อ้างอิง X] หรือ (แหล่งอ้างอิงที่ X)** ในข้อความเด็ดขาด
    - `"supported_points"`: รายการประเด็นที่เป็น "ความจริง" เขียนเป็นประโยคที่สมบูรณ์ ชัดเจน (ห้ามใส่ [อ้างอิง X] หรือ แหล่งอ้างอิงที่ X ต่อท้าย)
    - `"conflicting_points"`: รายการประเด็นที่ "เป็นเท็จ บิดเบือน หรือถูกหักล้าง" เขียนเป็นประโยคที่สมบูรณ์และชัดเจน (ห้ามใส่ [อ้างอิง X] หรือ แหล่งอ้างอิงที่ X ต่อท้าย)
+   - `"sub_claims"`: การแตกประเด็นย่อย (Multi-Claim Breakdown) แยกตรวจสอบทีละข้อความ (ถ้ามีหลายประเด็นในข้อความเดียว ให้แยก 2-4 ข้อย่อย แต่ละข้อมี claim_text, score 1-5, verdict_label, detail)
    - `"relevant_ref_ids"`: รายการหมายเลขอ้างอิงที่เกี่ยวข้องจริง เช่น [1, 2, 3]
 
 5. 🔗 **กรณีลิงก์และข้อความไม่ตรงกัน (Topic Mismatch Handling):**
@@ -596,9 +585,18 @@ def _build_analyzer_prompt(clean_claim: str, origin_info: str, ref_text: str, cu
 ตอบกลับเป็น JSON รูปแบบนี้เท่านั้น:
 {{
     "thought": "วิเคราะห์ข้อเท็จจริงและลำดับเหตุการณ์เป็นภาษาไทยอย่างละเอียด",
+    "disinformation_category": "FINANCIAL_SCAM หรือ HEALTH_MEDICINE หรือ PUBLIC_POLICY_GOV หรือ DISASTER_SAFETY หรือ CELEBRITY_SOCIAL หรือ GENERAL_MISINFO",
     "verdict_summary": "สรุปผลการตรวจสอบฉบับเข้าใจง่ายใน 1-2 ประโยค",
     "supported_points": ["ประเด็นที่ได้รับการยืนยันว่าเป็นความจริงอย่างสมบูรณ์"],
     "conflicting_points": ["ประเด็นที่เป็นเท็จ บิดเบือน หรือถูกหักล้างอย่างสมบูรณ์"],
+    "sub_claims": [
+        {{
+            "claim_text": "ประเด็นย่อยที่ 1",
+            "score": 5,
+            "verdict_label": "จริง (100%)",
+            "detail": "เหตุผลสั้นๆ สำหรับประเด็นย่อยนี้"
+        }}
+    ],
     "comparative_analysis": "บทวิเคราะห์เชิงลึก 3 มิติ (1. สิ่งที่เกิดขึ้นจริง 2. ประเด็นที่ต้องจับตา 3. สรุปข้อควรระวังและสิ่งที่ควรทราบก่อนแชร์)",
     "relevant_ref_ids": [1, 2],
     "score": ตัวเลข 1-5

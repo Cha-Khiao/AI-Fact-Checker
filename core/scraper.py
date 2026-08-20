@@ -525,6 +525,66 @@ def _extract_article_text_from_html(html: str) -> str:
         return f"{headline}\n\n{best_text}".strip()
     return best_text
 
+def extract_metadata_published_time(html: str) -> str:
+    """Extract publish timestamp directly from HTML structured data/meta tags."""
+    if not html:
+        return ""
+    try:
+        soup = BeautifulSoup(html[:100000], 'html.parser')
+        for script in soup.find_all('script', type='application/ld+json'):
+            try:
+                data = json.loads(script.string or '{}')
+                def find_date(obj):
+                    if isinstance(obj, dict):
+                        if 'datePublished' in obj: return obj['datePublished']
+                        if 'dateCreated' in obj: return obj['dateCreated']
+                        for v in obj.values():
+                            res = find_date(v)
+                            if res: return res
+                    elif isinstance(obj, list):
+                        for item in obj:
+                            res = find_date(item)
+                            if res: return res
+                    return None
+                dt = find_date(data)
+                if dt and isinstance(dt, str) and len(dt) >= 4:
+                    return dt
+            except Exception:
+                continue
+
+        meta_properties = [
+            ('property', 'article:published_time'),
+            ('property', 'og:published_time'),
+            ('property', 'og:article:published_time'),
+            ('name', 'publishdate'),
+            ('name', 'publish_date'),
+            ('name', 'pubdate'),
+            ('name', 'date'),
+            ('name', 'dc.date'),
+            ('name', 'dc.date.issued'),
+            ('name', 'sailthru.date'),
+            ('name', 'parsely-pub-date'),
+            ('name', 'rnews:datePublished'),
+            ('itemprop', 'datePublished'),
+            ('itemprop', 'dateCreated'),
+        ]
+        for attr, val in meta_properties:
+            meta = soup.find('meta', attrs={attr: re.compile(f'^{re.escape(val)}$', re.I)})
+            if meta and meta.get('content'):
+                return meta['content'].strip()
+
+        time_tag = soup.find('time')
+        if time_tag:
+            if time_tag.get('datetime'):
+                return time_tag['datetime'].strip()
+            if time_tag.get_text():
+                t_text = time_tag.get_text().strip()
+                if len(t_text) >= 4:
+                    return t_text
+    except Exception:
+        pass
+    return ""
+
 def fetch_with_fallback(url: str) -> str:
     anti_bot_patterns = r'(cloudflare|500 internal server error|403 forbidden|access denied|captcha|not acceptable|checking your browser|security check|just a moment|log in to facebook|เข้าสู่ระบบ|error 404|404 not found|page not found|ไม่พบหน้านี้|ไม่พบเนื้อหา|content not found|this page isn\'t available|หน้านี้ไม่พร้อมใช้งาน|อาจเสียหรือถูกลบไปแล้ว)'
 
@@ -538,7 +598,12 @@ def fetch_with_fallback(url: str) -> str:
 
                 if res.encoding is None or res.encoding.lower() == 'iso-8859-1':
                     res.encoding = res.apparent_encoding or 'utf-8'
+                
+                meta_date = extract_metadata_published_time(res.text)
                 clean_text = _extract_article_text_from_html(res.text)
+                if meta_date:
+                    clean_text = f"[เวลาเผยแพร่ของข่าว/โพสต์]: {meta_date}\n{clean_text}"
+
                 if len(clean_text) > 80 and not re.search(anti_bot_patterns, clean_text, re.IGNORECASE):
                     return clean_text
         except Exception:
@@ -552,7 +617,12 @@ def fetch_with_fallback(url: str) -> str:
             if res.status_code == 200:
                 if res.encoding is None or res.encoding.lower() == 'iso-8859-1':
                     res.encoding = res.apparent_encoding or 'utf-8'
+                
+                meta_date = extract_metadata_published_time(res.text)
                 clean_text = _extract_article_text_from_html(res.text)
+                if meta_date:
+                    clean_text = f"[เวลาเผยแพร่ของข่าว/โพสต์]: {meta_date}\n{clean_text}"
+
                 if len(clean_text) > 80 and not re.search(anti_bot_patterns, clean_text, re.IGNORECASE):
                     return clean_text
         except Exception:
@@ -582,7 +652,9 @@ def fetch_with_fallback(url: str) -> str:
                     if results:
                         title = results[0].get("title", "")
                         text = results[0].get("text", "")
-                        combined = f"{title}\n{text}".strip()
+                        published_date = results[0].get("publishedDate", "")
+                        prefix = f"[เวลาเผยแพร่ของข่าว/โพสต์]: {published_date}\n" if published_date else ""
+                        combined = f"{prefix}{title}\n{text}".strip()
                         if len(combined) > 80 and not re.search(anti_bot_patterns, combined, re.IGNORECASE):
                             return combined
         except Exception:
@@ -614,68 +686,13 @@ def is_gambling_content(text: str, domain: str = "") -> bool:
         return True
     return False
 
-THAI_MONTHS_MAP = {
-    'ม.ค.': 1, 'มกราคม': 1, 'ก.พ.': 2, 'กุมภาพันธ์': 2, 'มี.ค.': 3, 'มีนาคม': 3,
-    'เม.ย.': 4, 'เมษายน': 4, 'พ.ค.': 5, 'พฤษภาคม': 5, 'มิ.ย.': 6, 'มิถุนายน': 6,
-    'ก.ค.': 7, 'กรกฎาคม': 7, 'ส.ค.': 8, 'สิงหาคม': 8, 'ก.ย.': 9, 'กันยายน': 9,
-    'ต.ค.': 10, 'ตุลาคม': 10, 'พ.ย.': 11, 'พฤศจิกายน': 11, 'ธ.ค.': 12, 'ธันวาคม': 12
-}
-
-def parse_relative_or_explicit_date(text: str) -> tuple:
-    """Parse relative timestamps or explicit dates from Thai news text.
-
-    Returns (iso_date_str, display_thai_str, is_fresh_news)
-    """
-    from datetime import datetime, timedelta
-    import pytz
-    tz = pytz.timezone('Asia/Bangkok')
-    now = datetime.now(tz)
-    text_clean = str(text or "").strip()
-    if not text_clean:
-        return None, "ไม่ระบุในข้อความ", False
-
-    thai_date_match = re.search(r'(\d{1,2})\s*(ม\.ค\.|มกราคม|ก\.พ\.|กุมภาพันธ์|มี\.ค\.|มีนาคม|เม\.ย\.|เมษายน|พ\.ค\.|พฤษภาคม|มิ\.ย\.|มิถุนายน|ก\.ค\.|กรกฎาคม|ส\.ค\.|สิงหาคม|ก\.ย\.|กันยายน|ต\.ค\.|ตุลาคม|พ\.ย\.|พฤศจิกายน|ธ\.ค\.|ธันวาคม)\s*(\d{2,4})', text_clean)
-    if thai_date_match:
-        day = int(thai_date_match.group(1))
-        month_str = thai_date_match.group(2)
-        year_raw = int(thai_date_match.group(3))
-        month = THAI_MONTHS_MAP.get(month_str, 1)
-        if year_raw < 100:
-            year = year_raw + 2500 - 543
-        elif year_raw > 2400:
-            year = year_raw - 543
-        else:
-            year = year_raw
-        try:
-            dt = datetime(year, month, day)
-            delta_days = (now.date() - dt.date()).days
-            is_fresh = delta_days <= 1
-            return dt.strftime("%Y-%m-%d"), f"{day} {month_str} {year+543}", is_fresh
-        except Exception:
-            pass
-
-    rel_match = re.search(r'(\d+)\s*(วินาที|นาที|ชั่วโมง|ชม\.|วัน|สัปดาห์|เดือน|ปี)\s*(ที่แล้ว|ก่อน)', text_clean, re.IGNORECASE)
-    if rel_match:
-        val = int(rel_match.group(1))
-        unit = rel_match.group(2)
-        if 'วินาที' in unit or 'นาที' in unit or 'ชั่วโมง' in unit or 'ชม.' in unit:
-            dt = now - timedelta(hours=val if ('ชั่วโมง' in unit or 'ชม.' in unit) else 0)
-            return dt.strftime("%Y-%m-%d"), f"{val} {unit}ที่แล้ว", True
-        elif 'วัน' in unit:
-            dt = now - timedelta(days=val)
-            return dt.strftime("%Y-%m-%d"), f"{val} วันก่อน", val <= 1
-        elif 'สัปดาห์' in unit:
-            dt = now - timedelta(weeks=val)
-            return dt.strftime("%Y-%m-%d"), f"{val} สัปดาห์ก่อน", False
-
-    if re.search(r'เมื่อวาน(นี้)?', text_clean):
-        dt = now - timedelta(days=1)
-        return dt.strftime("%Y-%m-%d"), "เมื่อวานนี้", True
-
-    if re.search(r'(โพสต์เมื่อ|เผยแพร่|อัปเดต)\s*:\s*วันนี้', text_clean):
-        return now.strftime("%Y-%m-%d"), "วันนี้", True
-
-    return None, "ไม่ระบุในข้อความ", False
+try:
+    from .date_utils import parse_thai_and_global_date as parse_relative_or_explicit_date
+except ImportError:
+    try:
+        from date_utils import parse_thai_and_global_date as parse_relative_or_explicit_date
+    except ImportError:
+        pass
 
 def extract_text_from_url(url: str) -> dict:
     try:
