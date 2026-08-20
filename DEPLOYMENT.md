@@ -29,7 +29,7 @@
 3. ตั้งค่าบริการให้ตรงตามนี้:
    - **Name:** `factcheck-api`
    - **Region:** `Singapore` (ใกล้ไทยที่สุดและเร็วที่สุด)
-   - **Branch:** `main`
+   - **Branch:** `dev` (หรือ `main`)
    - **Root Directory:** *(เว้นว่างไว้)*
    - **Runtime:** `Python 3`
    - **Build Command:** `pip install -r requirements.txt`

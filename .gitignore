@@ -75,7 +75,6 @@ desktop.ini
 *.bak
 trace.txt
 debug_*.txt
-test_output.txt
 telemetry_logs.jsonl
 *.jsonl
 scratch/
