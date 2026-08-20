@@ -14,12 +14,16 @@ import {
 } from "@phosphor-icons/react";
 import { TrendingChips } from "./TrendingChips";
 import { MixedInputNoticeModal } from "./MixedInputNoticeModal";
+<<<<<<< HEAD
 import { OfflineDemoAlertModal } from "./OfflineDemoAlertModal";
 import { SecretTeamModal } from "./SecretTeamModal";
 import { useHealthCheck } from "@/hooks/useHealthCheck";
 import { getDemoFactCheckResult } from "@/lib/demoData";
 
 
+=======
+
+>>>>>>> origin/dev
 const MAX_URLS = 1;
 const MAX_CHARS = 1500;
 const OPTIMAL_CHARS_WARN = 1000;
@@ -48,7 +52,11 @@ function extractUniqueUrls(raw: string): string[] {
 
   const bareMatches =
     raw.match(
+<<<<<<< HEAD
       /(?:^|[\s(])((?:www\.)?(?:facebook\.com|fb\.watch|fb\.me|fb\.com|x\.com|twitter\.com|t\.co|instagram\.com|instagr\.am|threads\.net|today\.line\.me|line\.me|lin\.ee|[a-zA-Z0-9-]+\.(?:co\.th|or\.th|go\.th|in\.th|ac\.th|com|org|net|news|co|me|today|info|app|tv|io|ai|cc|site|xyz|online))\b[^\s<>"'\[\]{}()]*)/gi
+=======
+      /(?:^|[\s(])((?:www\.)?(?:facebook\.com|fb\.watch|fb\.me|fb\.com|x\.com|twitter\.com|t\.co|instagram\.com|instagr\.am|today\.line\.me|line\.me|lin\.ee|[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:co\.th|or\.th|go\.th|in\.th|ac\.th|com|org|net|news|co|me|today|info|app|tv))\/[^\s<>"'\[\]{}()]*)/gi
+>>>>>>> origin/dev
     ) || [];
 
   const cleanedBare = bareMatches
@@ -57,8 +65,12 @@ function extractUniqueUrls(raw: string): string[] {
     .map((m) => `https://${m}`);
 
   const combined = [...httpMatches, ...cleanedBare];
+<<<<<<< HEAD
   const unique = Array.from(new Set(combined.map((u) => u.trim())));
   return unique;
+=======
+  return Array.from(new Set(combined));
+>>>>>>> origin/dev
 }
 
 function getPlatformDetails(url: string): { name: string; badgeStyle: string } {
@@ -239,11 +251,15 @@ export function SearchHero({
   const [alertNotice, setAlertNotice] = useState<string | null>(null);
   const [isMixedModalOpen, setIsMixedModalOpen] = useState(false);
   const [hasShownMixedNotice, setHasShownMixedNotice] = useState(false);
+<<<<<<< HEAD
   const [isOfflineDemoAlertOpen, setIsOfflineDemoAlertOpen] = useState(false);
   const [isTrendingModalOpen, setIsTrendingModalOpen] = useState(false);
   const [isSecretTeamModalOpen, setIsSecretTeamModalOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const { isOnline, isDemoOffline } = useHealthCheck();
+=======
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+>>>>>>> origin/dev
 
   const inputMeta = useMemo(() => analyzeInput(input), [input]);
 
@@ -281,8 +297,14 @@ export function SearchHero({
     }
 
     const meta = analyzeInput(rawVal);
+<<<<<<< HEAD
     if (meta.type === "mixed" && activeTab !== "url") {
       onTabChange("url");
+=======
+    if (meta.type === "mixed") {
+      if (activeTab !== "url") onTabChange("url");
+      setIsMixedModalOpen(true);
+>>>>>>> origin/dev
     } else if (meta.type === "url_only" && activeTab !== "url") {
       onTabChange("url");
     } else if (meta.type === "text_only" && activeTab !== "text") {
@@ -299,6 +321,7 @@ export function SearchHero({
       const { sanitized, blockedUrlCount } = sanitizeInput(combinedText);
       const meta = analyzeInput(sanitized);
 
+<<<<<<< HEAD
       // Intercept on paste ONLY when in offline demo mode
       if (isDemoOffline && sanitized.trim().length > 0) {
         const isPreset = getDemoFactCheckResult(sanitized);
@@ -307,6 +330,8 @@ export function SearchHero({
         }
       }
 
+=======
+>>>>>>> origin/dev
       if (meta.type === "mixed") {
         onTabChange("url");
         setIsMixedModalOpen(true);
@@ -630,6 +655,7 @@ export function SearchHero({
         </div>
       </form>
 
+<<<<<<< HEAD
       {!loading && (
         <TrendingChips
           onSelect={handleChipSelect}
@@ -647,17 +673,23 @@ export function SearchHero({
           setIsTrendingModalOpen(true);
         }}
       />
+=======
+      {!loading && <TrendingChips onSelect={handleChipSelect} disabled={loading} />}
+>>>>>>> origin/dev
 
       <MixedInputNoticeModal
         isOpen={isMixedModalOpen}
         onClose={() => setIsMixedModalOpen(false)}
         detectedUrl={inputMeta.urls[0]}
       />
+<<<<<<< HEAD
 
       <SecretTeamModal
         isOpen={isSecretTeamModalOpen}
         onClose={() => setIsSecretTeamModalOpen(false)}
       />
+=======
+>>>>>>> origin/dev
     </div>
   );
 }

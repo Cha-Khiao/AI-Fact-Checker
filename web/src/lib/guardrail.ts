@@ -154,15 +154,22 @@ export function validateFactCheckInput(text: string): GuardrailViolation | null 
           host === "facebook.com" ||
           host === "m.facebook.com" ||
           host === "web.facebook.com" ||
+<<<<<<< HEAD
           host === "fb.com" ||
           host === "fb.watch"
         ) {
           const hasPost =
             path.includes("/share") ||
+=======
+          host === "fb.com"
+        ) {
+          const hasPost =
+>>>>>>> origin/dev
             path.includes("/posts") ||
             path.includes("/story.php") ||
             path.includes("/permalink") ||
             path.includes("/photos") ||
+<<<<<<< HEAD
             path.includes("/photo") ||
             path.includes("/videos") ||
             path.includes("/watch") ||
@@ -172,6 +179,10 @@ export function validateFactCheckInput(text: string): GuardrailViolation | null 
             search.includes("story_fbid=") ||
             search.includes("post_id=") ||
             search.includes("set=");
+=======
+            search.includes("fbid=") ||
+            search.includes("story_fbid=");
+>>>>>>> origin/dev
 
           if (!hasPost || path === "" || path === "/" || path === "/home.php") {
             return {

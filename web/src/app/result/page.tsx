@@ -21,6 +21,7 @@ import {
   Info,
   Globe,
   ArrowSquareOut,
+<<<<<<< HEAD
   Clock,
   CalendarDots,
   HourglassSimple,
@@ -30,6 +31,13 @@ import { useFactCheck } from "@/hooks/useFactCheck";
 import { cleanFactText, extractPublishDateOrRelativeTime } from "@/lib/utils";
 import { SystemAlertModal } from "@/components/SystemAlertModal";
 import { SecretTeamModal } from "@/components/SecretTeamModal";
+=======
+} from "@phosphor-icons/react";
+import { HistoryItem, FactCheckResult } from "@/types";
+import { useFactCheck } from "@/hooks/useFactCheck";
+import { cleanFactText } from "@/lib/utils";
+import { SystemAlertModal } from "@/components/SystemAlertModal";
+>>>>>>> origin/dev
 import { resolveSystemAlert } from "@/lib/errorResolver";
 
 const RESULT_CACHE_KEY = "factcheck_cached_result";
@@ -68,7 +76,10 @@ function parseInputContent(rawContent: string = "", explicitUrl?: string) {
 export default function ResultPage() {
   const router = useRouter();
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+<<<<<<< HEAD
   const [isTeamModalOpen, setIsTeamModalOpen] = useState(false);
+=======
+>>>>>>> origin/dev
   const isStarted = useRef(false);
 
   const {
@@ -148,17 +159,23 @@ export default function ResultPage() {
         alert={systemAlert}
         onAcknowledge={handleAcknowledgeAndGoHome}
       />
+<<<<<<< HEAD
       
       <SecretTeamModal
         isOpen={isTeamModalOpen}
         onClose={() => setIsTeamModalOpen(false)}
       />
+=======
+>>>>>>> origin/dev
 
       {!loading && (
         <Navbar
           onOpenHistory={() => setIsHistoryOpen(true)}
           historyCount={history.length}
+<<<<<<< HEAD
           onOpenTeamModal={() => setIsTeamModalOpen(true)}
+=======
+>>>>>>> origin/dev
           onReset={handleNewCheck}
         />
       )}
@@ -198,9 +215,21 @@ export default function ResultPage() {
                 summary={result.verdict.summary}
               />
 
+<<<<<<< HEAD
               <div className="rounded-3xl solid-card p-5 sm:p-7 mb-6 border-t-4 border-t-blue-500 dark:border-t-cyan-500 relative transition-all duration-300 ease-out hover:-translate-y-1 hover:shadow-xl dark:shadow-[0_0_30px_rgba(59,130,246,0.12)] dark:hover:shadow-[0_0_35px_rgba(59,130,246,0.22)] bg-gradient-to-br from-blue-500/5 via-sky-500/5 to-transparent dark:from-[#0d2238] dark:via-[#0c1a2e] dark:to-[#081220] overflow-hidden">
                 {/* Top Blue Light Beam */}
                 <div className="absolute top-0 left-0 right-0 h-[2.5px] bg-gradient-to-r from-transparent via-blue-400 dark:via-cyan-400 to-transparent shadow-[0_0_12px_rgba(59,130,246,0.8)]" />
+=======
+              <div className="rounded-3xl solid-card p-5 sm:p-7 mb-6 border-t-4 border-t-slate-400 dark:border-t-slate-600 relative transition-all duration-300 ease-out hover:-translate-y-1 hover:shadow-lg">
+                <div className="flex items-center gap-3 mb-5 pb-3 border-b border-slate-200/80 dark:border-slate-800/80">
+                  <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-blue-500/15 dark:bg-blue-500/25 text-blue-600 dark:text-cyan-400 ring-1 ring-blue-500/40">
+                    <Quotes size={20} weight="fill" />
+                  </div>
+                  <h4 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white">
+                    ข้อมูลที่ส่งตรวจสอบ
+                  </h4>
+                </div>
+>>>>>>> origin/dev
 
                 {(() => {
                   const { urls: inputUrls, text: inputText } = parseInputContent(
@@ -208,6 +237,7 @@ export default function ResultPage() {
                     result.input?.original_url
                   );
 
+<<<<<<< HEAD
                   const rawPublishDate =
                     result.input?.publish_date ||
                     result.verdict?.publish_date ||
@@ -339,10 +369,71 @@ export default function ResultPage() {
                         </div>
                       </div>
                     </>
+=======
+                  return (
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 sm:gap-6 items-start">
+                      <div className="flex flex-col justify-start items-stretch gap-3">
+                        {inputUrls.map((url, idx) => (
+                          <div
+                            key={url + idx}
+                            className="p-3.5 sm:p-4 rounded-2xl bg-blue-50/70 dark:bg-[#152e4d] border border-blue-200/80 dark:border-blue-800/80 flex items-center justify-between gap-3 text-xs sm:text-sm shadow-xs"
+                          >
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <Globe size={18} className="text-blue-600 dark:text-cyan-400 shrink-0" />
+                              <span className="truncate font-mono font-medium text-blue-950 dark:text-cyan-200">
+                                {url}
+                              </span>
+                            </div>
+                            <a
+                              href={url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="shrink-0 inline-flex items-center gap-1.5 font-bold text-xs text-blue-600 dark:text-cyan-300 hover:underline bg-white dark:bg-[#1e3b63] px-3 py-1.5 rounded-xl border border-blue-200 dark:border-blue-700 shadow-xs transition-transform active:scale-95"
+                            >
+                              <span>เปิดลิงก์</span>
+                              <ArrowSquareOut size={13} weight="bold" />
+                            </a>
+                          </div>
+                        ))}
+
+                        {inputText && (
+                          <ExpandableText
+                            maxLines={4}
+                            expandLabel="ดูเนื้อหาเต็ม"
+                            collapseLabel="ย่อเนื้อหา"
+                            className="w-full"
+                          >
+                            <div className="p-4 sm:p-5 rounded-2xl bg-slate-50/80 dark:bg-[#13253d] border border-slate-200 dark:border-[#2b446b] text-sm sm:text-base text-slate-800 dark:text-slate-100 leading-relaxed font-medium">
+                              &ldquo;{inputText}&rdquo;
+                            </div>
+                          </ExpandableText>
+                        )}
+                      </div>
+
+                      <div className="flex flex-col justify-start">
+                        <div className="p-4 sm:p-5 rounded-2xl bg-amber-50/60 dark:bg-[#26241b] border border-amber-200/80 dark:border-amber-700/50">
+                          <div className="text-xs font-bold text-amber-800 dark:text-amber-300 mb-2 flex items-center gap-1.5">
+                            <Info size={15} weight="bold" />
+                            <span>สรุปสาระสำคัญเบื้องต้น</span>
+                          </div>
+                          <ExpandableText
+                            maxLines={4}
+                            expandLabel="ดูสรุปทั้งหมด"
+                            collapseLabel="ย่อสรุป"
+                          >
+                            <p className="text-sm sm:text-base text-slate-800 dark:text-amber-50 leading-relaxed font-medium">
+                              {cleanFactText(result.verdict?.summary || "ไม่มีข้อมูลสรุป")}
+                            </p>
+                          </ExpandableText>
+                        </div>
+                      </div>
+                    </div>
+>>>>>>> origin/dev
                   );
                 })()}
               </div>
 
+<<<<<<< HEAD
               {/* Multi-Claim Breakdown (if multiple sub-claims detected) */}
               {result.verdict?.sub_claims && result.verdict.sub_claims.length > 1 && (
                 <div className="rounded-3xl solid-card p-5 sm:p-7 mb-6 border-t-4 border-t-indigo-500 dark:border-t-indigo-400 relative transition-all duration-300 ease-out hover:-translate-y-1 hover:shadow-xl dark:shadow-[0_0_30px_rgba(99,102,241,0.14)] dark:hover:shadow-[0_0_35px_rgba(99,102,241,0.25)] bg-gradient-to-br from-indigo-500/5 via-purple-500/5 to-transparent dark:from-[#141635] dark:via-[#101229] dark:to-[#090b17] overflow-hidden">
@@ -485,6 +576,8 @@ export default function ResultPage() {
                 </div>
               )}
 
+=======
+>>>>>>> origin/dev
               <EvidenceCards verdict={result.verdict} />
               <ReferenceList references={result.references} />
               <SystemAuditCard result={result} />
