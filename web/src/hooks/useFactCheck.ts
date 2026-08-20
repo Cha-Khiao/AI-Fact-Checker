@@ -2,8 +2,10 @@
 
 import { useState, useCallback, useRef } from "react";
 import { FactCheckResult, HistoryItem } from "@/types";
+import { getDemoFactCheckResult } from "@/lib/demoData";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API_BASE = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").replace(/\/+$/, "");
+
 const HISTORY_KEY = "ai_factcheck_history_v1";
 
 export function useFactCheck() {
@@ -55,6 +57,34 @@ export function useFactCheck() {
     }
   }, []);
 
+  const runDemoSimulation = useCallback(
+    async (demoData: FactCheckResult, rawInput: string) => {
+      setProgressPct(20);
+      setProgressMessage("กำลังสกัดประเด็นและคัดกรองเนื้อหา (Demo Mode)...");
+      await new Promise((r) => setTimeout(r, 250));
+
+      setProgressPct(55);
+      setProgressMessage("กำลังสืบค้นสื่อหลักและฐานข้อมูลทางการ...");
+      await new Promise((r) => setTimeout(r, 300));
+
+      setProgressPct(85);
+      setProgressMessage("กำลังประเมินหลักฐานและเรียบเรียงบทวิเคราะห์...");
+      await new Promise((r) => setTimeout(r, 250));
+
+      setProgressPct(100);
+      setProgressMessage("วิเคราะห์เสร็จสมบูรณ์!");
+      const finalDemoResult: FactCheckResult = {
+        ...demoData,
+        is_demo_mode: true,
+      };
+      setResult(finalDemoResult);
+      saveToHistory(finalDemoResult, rawInput);
+      setError(null);
+      setLoading(false);
+    },
+    [saveToHistory]
+  );
+
   const checkNews = useCallback(
     async (inputText: string) => {
       const cleanInput = inputText.trim();
@@ -74,7 +104,7 @@ export function useFactCheck() {
 
       let streamSucceeded = false;
 
-      // 1. Try SSE Streaming first
+      // 1. Try Live SSE Stream API from Backend
       try {
         const response = await fetch(`${API_BASE}/api/factcheck/stream`, {
           method: "POST",
@@ -136,7 +166,7 @@ export function useFactCheck() {
         console.warn("Streaming mode failed, attempting REST fallback...", err);
       }
 
-      // 2. Fallback to Standard REST if stream didn't complete
+      // 2. Try REST Fallback API from Backend
       if (!streamSucceeded && !controller.signal.aborted) {
         try {
           setProgressPct(50);
@@ -158,20 +188,26 @@ export function useFactCheck() {
           setProgressMessage("วิเคราะห์เสร็จสมบูรณ์!");
           setResult(data);
           saveToHistory(data, cleanInput);
-        } catch (restErr: unknown) {
-          if (!(restErr instanceof Error) || restErr.name !== "AbortError") {
-            setError(
-              restErr instanceof Error
-                ? restErr.message
-                : "เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์"
-            );
+          setLoading(false);
+          return;
+        } catch {
+          // Check if input matches one of the 10 rich demo presets
+          const demoFallback = getDemoFactCheckResult(cleanInput);
+          if (demoFallback && !controller.signal.aborted) {
+            await runDemoSimulation(demoFallback, cleanInput);
+            return;
+          }
+
+          if (!controller.signal.aborted) {
+            const errorMsg = `ไม่สามารถเชื่อมต่อไปยัง Backend (${API_BASE}) ได้ในขณะนี้\n💡 คุณสามารถคลิกเลือก "ตัวอย่างประเด็นทดสอบ (10 ตัวเลือก)" เพื่อทดลองระบบในโหมด Demo แบบออฟไลน์ได้ทันที 100% โดยไม่ต้องพึ่งพาเซิร์ฟเวอร์!`;
+            setError(errorMsg);
           }
         }
       }
 
       setLoading(false);
     },
-    [saveToHistory]
+    [saveToHistory, runDemoSimulation]
   );
 
   const reset = useCallback(() => {
@@ -185,6 +221,14 @@ export function useFactCheck() {
     setError(null);
   }, []);
 
+  const restoreResult = useCallback((cached: FactCheckResult) => {
+    setLoading(false);
+    setError(null);
+    setProgressPct(100);
+    setProgressMessage("วิเคราะห์เสร็จสมบูรณ์!");
+    setResult(cached);
+  }, []);
+
   return {
     loading,
     progressPct,
@@ -194,7 +238,7 @@ export function useFactCheck() {
     history,
     checkNews,
     reset,
+    restoreResult,
     clearHistory,
-    setResult,
   };
 }

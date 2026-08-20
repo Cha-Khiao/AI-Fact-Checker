@@ -1,114 +1,92 @@
 "use client";
 
-import React, { useState } from "react";
-import { motion } from "framer-motion";
+import React from "react";
 import { ScoreLevel } from "@/types";
-import { Mascot } from "./Mascot";
 import {
-  ShieldCheckered,
-  Copy,
-  Check,
-  Sparkle,
+  CheckCircle,
+  Warning,
+  XCircle,
 } from "@phosphor-icons/react";
-import { cleanFactText, getScoreMetadata } from "@/lib/utils";
+import { getScoreMetadata } from "@/lib/utils";
+import { NumberTicker } from "./NumberTicker";
 
 interface ScoreMeterProps {
   score: ScoreLevel;
-  summary: string;
+  summary?: string;
 }
 
-export function ScoreMeter({ score, summary }: ScoreMeterProps) {
-  const cleanSummary = cleanFactText(summary);
-  const [copied, setCopied] = useState(false);
-  const meta = getScoreMetadata(score);
+function getBacklightColor(score: ScoreLevel) {
+  switch (score) {
+    case 5:
+    case 4:
+      return "bg-emerald-400/30 dark:bg-emerald-500/35";
+    case 3:
+      return "bg-amber-400/30 dark:bg-amber-500/35";
+    case 2:
+      return "bg-orange-400/30 dark:bg-orange-500/35";
+    case 1:
+    default:
+      return "bg-rose-400/30 dark:bg-rose-500/35";
+  }
+}
 
-  const handleCopySummary = async () => {
-    try {
-      await navigator.clipboard.writeText(cleanSummary);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch (e) {
-      console.warn("Clipboard failed", e);
-    }
-  };
+function getVerdictIcon(score: ScoreLevel) {
+  switch (score) {
+    case 5:
+    case 4:
+      return <CheckCircle size={56} weight="fill" className="text-emerald-500 drop-shadow-md" />;
+    case 3:
+      return <Warning size={56} weight="fill" className="text-amber-500 drop-shadow-md" />;
+    case 2:
+      return <Warning size={56} weight="fill" className="text-orange-500 drop-shadow-md" />;
+    case 1:
+    default:
+      return <XCircle size={56} weight="fill" className="text-rose-500 drop-shadow-md" />;
+  }
+}
+
+function getVerdictDirectText(score: ScoreLevel) {
+  switch (score) {
+    case 5:
+      return "ข้อมูลถูกต้องและสอดคล้องกับข้อเท็จจริง";
+    case 4:
+      return "ข้อมูลถูกต้องเป็นส่วนใหญ่";
+    case 3:
+      return "ข้อมูลก้ำกึ่ง / ยังไม่มีข้อยุติแน่ชัด";
+    case 2:
+      return "ข้อมูลบิดเบือน / ไม่ตรงกับข้อเท็จจริง";
+    case 1:
+    default:
+      return "ข้อมูลเท็จ / ข่าวปลอม";
+  }
+}
+
+export function ScoreMeter({ score }: ScoreMeterProps) {
+  const meta = getScoreMetadata(score);
+  const backlightColor = getBacklightColor(score);
+  const directText = getVerdictDirectText(score);
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 15 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.4 }}
-      className="rounded-2xl glass-panel p-5 sm:p-7 mb-6 shadow-md"
-    >
-      <div className="flex flex-col md:flex-row items-center md:items-start gap-6">
-        
-        {/* Score Radial Indicator */}
-        <div className="flex flex-col items-center justify-center shrink-0 w-32 text-center p-3 rounded-2xl bg-slate-100/70 dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/80">
-          <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">
-            ความน่าเชื่อถือ
-          </span>
-          <div className={`text-4xl sm:text-5xl font-extrabold tracking-tight ${meta.color}`}>
-            {meta.score}<span className="text-xl text-slate-400 dark:text-slate-500 font-medium">/5</span>
-          </div>
-          <div className="w-full bg-slate-200 dark:bg-slate-700 h-1.5 rounded-full mt-2 overflow-hidden">
-            <motion.div
-              initial={{ width: 0 }}
-              animate={{ width: `${meta.percentage}%` }}
-              transition={{ duration: 0.8, ease: "easeOut" }}
-              className="h-full rounded-full"
-              style={{ backgroundColor: meta.gaugeColor }}
-            />
-          </div>
-          <span className="text-[10px] text-slate-400 mt-1 font-mono">{meta.percentage}%</span>
+    <div className="relative w-full py-6 sm:py-10 my-2 flex flex-col items-center justify-center text-center select-none">
+      <div
+        className={`absolute w-60 h-60 sm:w-80 sm:h-80 rounded-full ${backlightColor} blur-3xl pointer-events-none -z-10 animate-pulse`}
+      />
+
+      <div className="flex flex-col items-center justify-center">
+        <div className="mb-2">
+          {getVerdictIcon(score)}
         </div>
 
-        {/* Verdict Content */}
-        <div className="flex-1 min-w-0 text-center md:text-left">
-          <div className="flex flex-wrap items-center justify-center md:justify-start gap-2 mb-2.5">
-            <span className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1 text-xs font-bold border ${meta.badgeBg}`}>
-              <ShieldCheckered size={16} weight="duotone" />
-              <span>{meta.label}</span>
-            </span>
-            <span className="text-xs text-slate-500 dark:text-slate-400 font-medium">
-              ({meta.standardLabel})
-            </span>
-          </div>
-
-          <h3 className="text-base sm:text-xl font-bold text-slate-900 dark:text-white leading-snug tracking-tight">
-            {cleanSummary}
-          </h3>
-
-          <div className="mt-4 pt-3.5 border-t border-slate-200/80 dark:border-slate-800/80 flex flex-col sm:flex-row items-center justify-between gap-3">
-            <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed flex items-center gap-1.5">
-              <Sparkle size={14} weight="fill" className="text-cyan-500 shrink-0" />
-              <span>{meta.subLabel}</span>
-            </p>
-
-            <button
-              type="button"
-              onClick={handleCopySummary}
-              className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer shrink-0"
-            >
-              {copied ? (
-                <>
-                  <Check size={14} weight="bold" className="text-emerald-500" />
-                  <span className="text-emerald-600 dark:text-emerald-400 font-medium">คัดลอกแล้ว</span>
-                </>
-              ) : (
-                <>
-                  <Copy size={14} weight="bold" />
-                  <span>คัดลอกสรุป</span>
-                </>
-              )}
-            </button>
-          </div>
+        <div
+          className={`text-7xl sm:text-8xl md:text-9xl font-black font-mono tracking-tight ${meta.color} drop-shadow-sm`}
+        >
+          <NumberTicker value={meta.percentage} suffix="%" />
         </div>
 
-        {/* Mascot Character */}
-        <div className="hidden lg:flex shrink-0">
-          <Mascot state={meta.mascotState} size={75} />
-        </div>
-
+        <h2 className="mt-3 text-xl sm:text-2xl md:text-3xl font-bold tracking-tight text-slate-900 dark:text-white">
+          {directText}
+        </h2>
       </div>
-    </motion.div>
+    </div>
   );
 }

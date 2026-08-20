@@ -19,11 +19,9 @@ export function VantaBirdsBackground() {
   useEffect(() => {
     if (typeof window === "undefined" || !vantaRef.current) return;
 
-    // Check if user requested reduced motion (accessibility & low battery mode)
     const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     if (prefersReducedMotion) return;
 
-    // Attach THREE to window globally for Vanta internal geometry constructors
     (window as unknown as { THREE: typeof THREE }).THREE = THREE;
 
     let activeEffect: VantaEffect | null = null;
@@ -50,13 +48,12 @@ export function VantaBirdsBackground() {
           vantaEffect.current = null;
         }
 
-        // Adaptive performance scaling for Mobile vs Desktop
         const isMobile = width < 768;
 
         activeEffect = BIRDS({
           el: vantaRef.current,
           THREE: THREE,
-          mouseControls: !isMobile, // Disable mouse tracking overhead on mobile
+          mouseControls: !isMobile,
           touchControls: false,
           gyroControls: false,
           minHeight: 200.0,
@@ -64,16 +61,16 @@ export function VantaBirdsBackground() {
           scale: 1.0,
           scaleMobile: 1.0,
           backgroundColor: isDark ? 0x070b14 : 0xf8fafc,
-          color1: isDark ? 0x00d2ff : 0x0284c7, // Electric Cyan / Sky
-          color2: isDark ? 0x6366f1 : 0x2563eb, // Indigo / Royal Blue
+          color1: isDark ? 0x0284c7 : 0x0369a1,
+          color2: isDark ? 0x1e3a8a : 0x475569,
           colorMode: "lerpGradient",
-          birdSize: isMobile ? 0.9 : 1.15,
+          birdSize: isMobile ? 0.85 : 1.0,
           wingSpan: isMobile ? 18.0 : 24.0,
-          speedLimit: isMobile ? 2.8 : 3.6,
-          separation: isMobile ? 55.0 : 65.0,
-          alignment: 25.0,
-          cohesion: 25.0,
-          quantity: isMobile ? 2.0 : 3.2, // Lightweight 2.0 on mobile to preserve battery
+          speedLimit: isMobile ? 2.2 : 2.8,
+          separation: isMobile ? 55.0 : 70.0,
+          alignment: 15.0,
+          cohesion: 12.0,
+          quantity: isMobile ? 2.5 : 3.5,
         });
 
         vantaEffect.current = activeEffect;
@@ -99,14 +96,13 @@ export function VantaBirdsBackground() {
     };
   }, []);
 
-  // Seamless in-place color update on Theme toggle without resetting flight physics
   useEffect(() => {
     if (!vantaEffect.current) return;
 
     vantaEffect.current.setOptions({
       backgroundColor: isDark ? 0x070b14 : 0xf8fafc,
-      color1: isDark ? 0x00d2ff : 0x0284c7,
-      color2: isDark ? 0x6366f1 : 0x2563eb,
+      color1: isDark ? 0x0284c7 : 0x0369a1,
+      color2: isDark ? 0x1e3a8a : 0x475569,
     });
   }, [isDark]);
 
@@ -115,14 +111,12 @@ export function VantaBirdsBackground() {
       className="fixed inset-0 pointer-events-none -z-10 overflow-hidden select-none"
       aria-hidden="true"
     >
-      {/* Hardware-accelerated 3D Vanta.js Birds Canvas Layer */}
       <div
         ref={vantaRef}
-        className="absolute inset-0 w-full h-full opacity-80 sm:opacity-85 dark:opacity-75 transition-opacity duration-700 transform-gpu will-change-transform"
+        className="absolute inset-0 w-full h-full opacity-35 sm:opacity-45 dark:opacity-35 transition-opacity duration-700 transform-gpu will-change-transform"
       />
-
-      {/* Atmospheric Soft Vignette Diffuser */}
-      <div className="absolute inset-0 bg-gradient-to-b from-transparent via-slate-50/15 to-slate-50/60 dark:via-[#070b14]/15 dark:to-[#070b14]/70 pointer-events-none" />
+      <div className="absolute inset-0 bg-slate-900/[0.03] dark:bg-[#070b14]/40 pointer-events-none" />
+      <div className="absolute inset-0 bg-gradient-to-b from-transparent via-slate-50/30 to-slate-50/75 dark:via-[#070b14]/30 dark:to-[#070b14]/85 pointer-events-none" />
     </div>
   );
 }

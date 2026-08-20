@@ -22,11 +22,6 @@ export function cleanFactText(text: string): string {
   return clean.trim();
 }
 
-export function cleanForCaption(text: string): string {
-  if (!text) return "";
-  return stripMarkdown(text).replace(/\n{3,}/g, "\n\n").trim();
-}
-
 export function getScoreColor(score: ScoreLevel | number): string {
   switch (score) {
     case 5:
@@ -108,3 +103,11 @@ export function getScoreMetadata(score: ScoreLevel | number) {
       };
   }
 }
+
+import { extractUniversalPublishDate } from "./dateUtils";
+export { extractUniversalPublishDate };
+
+export function extractPublishDateOrRelativeTime(text: string, metadataDate?: string): string | null {
+  return extractUniversalPublishDate(text, metadataDate);
+}
+
