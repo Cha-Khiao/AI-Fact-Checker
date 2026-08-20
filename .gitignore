@@ -73,6 +73,8 @@ desktop.ini
 # 6. Temporary Scratch & Debug Output Files
 *.tmp
 *.bak
+trace.txt
+debug_*.txt
 test_output.txt
 telemetry_logs.jsonl
 *.jsonl
