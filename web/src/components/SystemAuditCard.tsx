@@ -40,11 +40,22 @@ export function SystemAuditCard({ result }: SystemAuditCardProps) {
   const analyzerPct = 100 - plannerPct - searchPct;
 
   return (
+<<<<<<< HEAD
+    <div className="rounded-3xl solid-card border-t-4 border-t-purple-500 dark:border-t-purple-400 overflow-hidden relative transition-all duration-300 ease-out hover:-translate-y-1 hover:shadow-xl dark:shadow-[0_0_30px_rgba(168,85,247,0.14)] dark:hover:shadow-[0_0_35px_rgba(168,85,247,0.25)] bg-gradient-to-br from-purple-500/5 via-indigo-500/5 to-transparent dark:from-[#1c1335] dark:via-[#160e2a] dark:to-[#0e081c] mb-6 shadow-sm">
+      {/* Top Purple Light Beam */}
+      <div className="absolute top-0 left-0 right-0 h-[2.5px] bg-gradient-to-r from-transparent via-purple-400 dark:via-fuchsia-400 to-transparent shadow-[0_0_12px_rgba(168,85,247,0.8)] pointer-events-none" />
+
+      <button
+        type="button"
+        onClick={() => setIsOpen((prev) => !prev)}
+        className="w-full flex items-center justify-between p-5 sm:p-6 text-left cursor-pointer hover:bg-slate-50/50 dark:hover:bg-[#1a2d48]/40 transition-colors relative"
+=======
     <div className="rounded-3xl solid-card border-t-4 border-t-purple-500 overflow-hidden relative transition-all duration-300 ease-out hover:-translate-y-0.5 hover:border-purple-500 hover:shadow-[0_0_25px_rgba(168,85,247,0.35)] dark:hover:border-purple-400 dark:hover:shadow-[0_0_30px_2px_rgba(168,85,247,0.45)] mb-6 shadow-sm">
       <button
         type="button"
         onClick={() => setIsOpen((prev) => !prev)}
         className="w-full flex items-center justify-between p-5 sm:p-6 text-left cursor-pointer hover:bg-slate-50/50 dark:hover:bg-[#1a2d48]/40 transition-colors"
+>>>>>>> origin/dev
       >
         <div className="flex items-center gap-3.5">
           <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-purple-600 via-indigo-600 to-cyan-500 text-white shadow-md shadow-purple-500/25 shrink-0 ring-2 ring-purple-400/30">

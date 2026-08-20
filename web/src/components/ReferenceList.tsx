@@ -41,6 +41,32 @@ export function ReferenceList({ references = [] }: ReferenceListProps) {
 
   return (
     <div
+<<<<<<< HEAD
+      className={`rounded-3xl solid-card border-t-4 border-t-blue-500 dark:border-t-cyan-500 relative transition-all duration-300 ease-out hover:-translate-y-1 hover:shadow-xl dark:shadow-[0_0_30px_rgba(59,130,246,0.12)] dark:hover:shadow-[0_0_35px_rgba(59,130,246,0.22)] bg-gradient-to-br from-blue-500/5 via-sky-500/5 to-transparent dark:from-[#0d2238] dark:via-[#0c1a2e] dark:to-[#081220] overflow-hidden mb-6 ${
+        hasRefs ? "p-6 sm:p-7" : "p-4 sm:p-5"
+      }`}
+    >
+      {/* Top Blue Light Beam */}
+      <div className="absolute top-0 left-0 right-0 h-[2.5px] bg-gradient-to-r from-transparent via-blue-400 dark:via-cyan-400 to-transparent shadow-[0_0_12px_rgba(59,130,246,0.8)]" />
+
+      <div className={`flex items-center justify-between gap-3 ${hasRefs ? "pb-3 border-b border-blue-200/40 dark:border-blue-800/40" : ""}`}>
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 text-white shadow-md shadow-blue-500/30 ring-2 ring-blue-400/40 shrink-0">
+            <MagnifyingGlass size={22} weight="bold" />
+          </div>
+          <div>
+            <h4 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white">
+              แหล่งข้อมูลอ้างอิงและข่าวที่เกี่ยวข้อง
+            </h4>
+            <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400">
+              สืบค้นและเทียบเคียงจากฐานข้อมูลข่าวสารและสื่อมวลชนที่เชื่อถือได้
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-mono font-bold bg-blue-500/15 text-blue-700 dark:text-cyan-300 border border-blue-500/30">
+=======
       className={`rounded-3xl solid-card border-t-4 border-t-blue-500 relative transition-all duration-300 ease-out hover:-translate-y-1 hover:border-blue-500 hover:shadow-[0_0_20px_rgba(59,130,246,0.35)] dark:hover:border-blue-400 dark:hover:shadow-[0_0_25px_2px_rgba(59,130,246,0.45)] mb-6 ${
         hasRefs ? "p-6 sm:p-7" : "p-4 sm:p-5"
       }`}
@@ -57,6 +83,7 @@ export function ReferenceList({ references = [] }: ReferenceListProps) {
 
         <div className="flex items-center gap-2">
           <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-mono font-bold bg-blue-500/15 text-blue-700 dark:text-cyan-300 border border-blue-500/30">
+>>>>>>> origin/dev
             {refList.length} แหล่ง
           </span>
 
@@ -83,6 +110,35 @@ export function ReferenceList({ references = [] }: ReferenceListProps) {
             return (
               <div
                 key={(url || ref.title) + idx}
+<<<<<<< HEAD
+                className="p-4 sm:p-5 rounded-2xl bg-gradient-to-br from-white/95 via-blue-50/60 to-indigo-50/40 dark:from-[#152e4d] dark:via-[#132845] dark:to-[#0f2038] border border-blue-200/90 dark:border-blue-500/40 hover:border-blue-400 dark:hover:border-cyan-400 shadow-xs dark:shadow-[0_4px_20px_rgba(59,130,246,0.12)] hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 relative overflow-hidden flex flex-col justify-between gap-3"
+              >
+                {/* Inner Top Micro Light Beam */}
+                <div className="absolute top-0 left-0 right-0 h-[1.5px] bg-gradient-to-r from-transparent via-blue-400/70 dark:via-cyan-300/50 to-transparent" />
+
+                <div>
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      {ref.is_official_authority && (
+                        <span className="inline-flex items-center gap-1 font-bold text-xs text-emerald-800 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-300 dark:border-emerald-700/80 px-2.5 py-1 rounded-lg shadow-2xs">
+                          <span>🛡️</span>
+                          <span>{ref.authority_name || "สื่อหลัก / หน่วยงานทางการ"}</span>
+                        </span>
+                      )}
+
+                      {ref.is_suspicious && (
+                        <span className="inline-flex items-center gap-1 font-bold text-xs text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-700/80 px-2.5 py-1 rounded-lg shadow-2xs">
+                          <span>⚠️ โดเมนเสี่ยงสูง</span>
+                        </span>
+                      )}
+
+                      {domain && (
+                        <span className="inline-flex items-center gap-1.5 font-mono font-bold text-xs text-blue-800 dark:text-cyan-200 bg-white/90 dark:bg-[#1c3a66] border border-blue-200/80 dark:border-cyan-500/40 px-2.5 py-1 rounded-lg shadow-2xs truncate max-w-[170px]">
+                          <Buildings size={13} weight="duotone" className="text-blue-600 dark:text-cyan-400 shrink-0" />
+                          <span className="truncate">{domain}</span>
+                        </span>
+                      )}
+=======
                 className="p-4 sm:p-5 rounded-2xl bg-gradient-to-br from-blue-50/90 via-sky-50/60 to-indigo-50/50 dark:from-[#132845] dark:via-[#162f52] dark:to-[#0f2038] border border-blue-200/90 dark:border-[#284877] hover:border-blue-400 dark:hover:border-cyan-400 hover:shadow-md transition-all flex flex-col justify-between gap-3"
               >
                 <div>
@@ -94,6 +150,7 @@ export function ReferenceList({ references = [] }: ReferenceListProps) {
                           <span className="truncate">{domain}</span>
                         </span>
                       )}
+>>>>>>> origin/dev
                       
                       {hasValidDate && (
                         <span className="flex items-center gap-1 text-slate-600 dark:text-slate-300 font-mono text-[11px] bg-white/60 dark:bg-slate-800/60 px-2.5 py-1 rounded-lg border border-slate-200/60 dark:border-slate-700/60">

@@ -103,3 +103,11 @@ export function getScoreMetadata(score: ScoreLevel | number) {
       };
   }
 }
+
+import { extractUniversalPublishDate } from "./dateUtils";
+export { extractUniversalPublishDate };
+
+export function extractPublishDateOrRelativeTime(text: string, metadataDate?: string): string | null {
+  return extractUniversalPublishDate(text, metadataDate);
+}
+

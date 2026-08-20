@@ -14,7 +14,16 @@ import {
 } from "@phosphor-icons/react";
 import { TrendingChips } from "./TrendingChips";
 import { MixedInputNoticeModal } from "./MixedInputNoticeModal";
+<<<<<<< HEAD
+import { OfflineDemoAlertModal } from "./OfflineDemoAlertModal";
+import { SecretTeamModal } from "./SecretTeamModal";
+import { useHealthCheck } from "@/hooks/useHealthCheck";
+import { getDemoFactCheckResult } from "@/lib/demoData";
 
+
+=======
+
+>>>>>>> origin/dev
 const MAX_URLS = 1;
 const MAX_CHARS = 1500;
 const OPTIMAL_CHARS_WARN = 1000;
@@ -43,7 +52,11 @@ function extractUniqueUrls(raw: string): string[] {
 
   const bareMatches =
     raw.match(
+<<<<<<< HEAD
+      /(?:^|[\s(])((?:www\.)?(?:facebook\.com|fb\.watch|fb\.me|fb\.com|x\.com|twitter\.com|t\.co|instagram\.com|instagr\.am|threads\.net|today\.line\.me|line\.me|lin\.ee|[a-zA-Z0-9-]+\.(?:co\.th|or\.th|go\.th|in\.th|ac\.th|com|org|net|news|co|me|today|info|app|tv|io|ai|cc|site|xyz|online))\b[^\s<>"'\[\]{}()]*)/gi
+=======
       /(?:^|[\s(])((?:www\.)?(?:facebook\.com|fb\.watch|fb\.me|fb\.com|x\.com|twitter\.com|t\.co|instagram\.com|instagr\.am|today\.line\.me|line\.me|lin\.ee|[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:co\.th|or\.th|go\.th|in\.th|ac\.th|com|org|net|news|co|me|today|info|app|tv))\/[^\s<>"'\[\]{}()]*)/gi
+>>>>>>> origin/dev
     ) || [];
 
   const cleanedBare = bareMatches
@@ -52,7 +65,12 @@ function extractUniqueUrls(raw: string): string[] {
     .map((m) => `https://${m}`);
 
   const combined = [...httpMatches, ...cleanedBare];
+<<<<<<< HEAD
+  const unique = Array.from(new Set(combined.map((u) => u.trim())));
+  return unique;
+=======
   return Array.from(new Set(combined));
+>>>>>>> origin/dev
 }
 
 function getPlatformDetails(url: string): { name: string; badgeStyle: string } {
@@ -172,11 +190,32 @@ function analyzeInput(raw: string): DetectionResult {
   const hasUrl = uniqueUrls.length > 0;
 
   if (hasUrl) {
-    const textWithoutUrls = text.replace(/https?:\/\/[^\s<>"'\[\]{}()]+/gi, "").trim();
-    if (textWithoutUrls.length > 3) {
+    // Strip both standard URLs, bare URLs, partial domain prefixes, and punctuation
+    let textWithoutUrls = text
+      .replace(/https?:\/\/[^\s<>"'\[\]{}()]+/gi, "")
+      .replace(/(?:www\.)?(?:facebook\.com|fb\.watch|fb\.me|fb\.com|x\.com|twitter\.com|t\.co|instagram\.com|instagr\.am|threads\.net|today\.line\.me|line\.me|lin\.ee|[a-zA-Z0-9-]+\.(?:co\.th|or\.th|go\.th|in\.th|ac\.th|com|org|net|news|co|me|today|info|app|tv|io|ai|cc|site|xyz|online))\b[^\s<>"'\[\]{}()]*/gi, "")
+      .replace(/^https?:?\/?\/?/i, "")
+      .replace(/^[“"'\s.,:;!?()\[\]{}]+|[”"'\s.,:;!?()\[\]{}]+$/g, "")
+      .trim();
+
+    // Only treat as mixed if there is genuine substantial body text (>= 15 characters of real commentary)
+    if (textWithoutUrls.length >= 15) {
       return { type: "mixed", urls: uniqueUrls, platforms, isAtUrlLimit, charCount };
     }
     return { type: "url_only", urls: uniqueUrls, platforms, isAtUrlLimit, charCount };
+  }
+
+  // Also check if text is a single bare domain like "facebook.com/..." without scheme
+  if (/^(?:https?:\/\/)?(?:www\.)?[a-zA-Z0-9-]+\.[a-zA-Z]{2,}(?:\/[^\s]*)?$/i.test(text)) {
+    const normalized = text.startsWith("http") ? text : `https://${text}`;
+    const details = getPlatformDetails(normalized);
+    return {
+      type: "url_only",
+      urls: [normalized],
+      platforms: [{ name: details.name, url: normalized, badgeStyle: details.badgeStyle }],
+      isAtUrlLimit: false,
+      charCount,
+    };
   }
 
   return { type: "text_only", urls: [], platforms: [], isAtUrlLimit: false, charCount };
@@ -212,7 +251,15 @@ export function SearchHero({
   const [alertNotice, setAlertNotice] = useState<string | null>(null);
   const [isMixedModalOpen, setIsMixedModalOpen] = useState(false);
   const [hasShownMixedNotice, setHasShownMixedNotice] = useState(false);
+<<<<<<< HEAD
+  const [isOfflineDemoAlertOpen, setIsOfflineDemoAlertOpen] = useState(false);
+  const [isTrendingModalOpen, setIsTrendingModalOpen] = useState(false);
+  const [isSecretTeamModalOpen, setIsSecretTeamModalOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const { isOnline, isDemoOffline } = useHealthCheck();
+=======
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+>>>>>>> origin/dev
 
   const inputMeta = useMemo(() => analyzeInput(input), [input]);
 
@@ -241,10 +288,23 @@ export function SearchHero({
 
     onInputChange(rawVal);
 
+    // Intercept repeatedly on every character typed ONLY when in offline demo mode
+    if (isDemoOffline && rawVal.trim().length > 0) {
+      const isPreset = getDemoFactCheckResult(rawVal);
+      if (!isPreset) {
+        setIsOfflineDemoAlertOpen(true);
+      }
+    }
+
     const meta = analyzeInput(rawVal);
+<<<<<<< HEAD
+    if (meta.type === "mixed" && activeTab !== "url") {
+      onTabChange("url");
+=======
     if (meta.type === "mixed") {
       if (activeTab !== "url") onTabChange("url");
       setIsMixedModalOpen(true);
+>>>>>>> origin/dev
     } else if (meta.type === "url_only" && activeTab !== "url") {
       onTabChange("url");
     } else if (meta.type === "text_only" && activeTab !== "text") {
@@ -261,6 +321,17 @@ export function SearchHero({
       const { sanitized, blockedUrlCount } = sanitizeInput(combinedText);
       const meta = analyzeInput(sanitized);
 
+<<<<<<< HEAD
+      // Intercept on paste ONLY when in offline demo mode
+      if (isDemoOffline && sanitized.trim().length > 0) {
+        const isPreset = getDemoFactCheckResult(sanitized);
+        if (!isPreset) {
+          setIsOfflineDemoAlertOpen(true);
+        }
+      }
+
+=======
+>>>>>>> origin/dev
       if (meta.type === "mixed") {
         onTabChange("url");
         setIsMixedModalOpen(true);
@@ -288,6 +359,14 @@ export function SearchHero({
 
       onInputChange(sanitized);
 
+      // Intercept on paste ONLY when in offline demo mode
+      if (isDemoOffline && sanitized.trim().length > 0) {
+        const isPreset = getDemoFactCheckResult(sanitized);
+        if (!isPreset) {
+          setIsOfflineDemoAlertOpen(true);
+        }
+      }
+
       if (blockedUrlCount > 0) {
         showAlert("นำเข้าเฉพาะ 1 ลิงก์แรก เพื่อประสิทธิภาพความแม่นยำสูงสุด");
       }
@@ -314,7 +393,48 @@ export function SearchHero({
   const handleFormSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (loading || !input.trim()) return;
-    onSubmit();
+
+    let finalInput = input.trim();
+    // Auto-normalize bare URLs (e.g. facebook.com/share/p/... -> https://facebook.com/share/p/...)
+    if (
+      /^(?:www\.)?(?:facebook\.com|fb\.watch|fb\.me|fb\.com|x\.com|twitter\.com|t\.co|instagram\.com|instagr\.am|threads\.net|today\.line\.me|line\.me|lin\.ee|[a-zA-Z0-9-]+\.[a-zA-Z]{2,})(?:\/[^\s]*)?$/i.test(
+        finalInput
+      ) &&
+      !finalInput.startsWith("http://") &&
+      !finalInput.startsWith("https://")
+    ) {
+      finalInput = `https://${finalInput}`;
+    }
+
+    // Secret Easter Egg trigger: View Development Team
+    const trimmedLower = finalInput.toLowerCase().trim();
+    if (
+      [
+        "!team",
+        "!devs",
+        "!credits",
+        "!creator",
+        "!authors",
+        "cs-sskru",
+        "sskru",
+        "sisaket",
+        "วิทยาการคอมพิวเตอร์",
+      ].includes(trimmedLower)
+    ) {
+      setIsSecretTeamModalOpen(true);
+      return;
+    }
+
+    // Prevent submitting custom un-indexed input ONLY when in offline demo mode
+    if (isDemoOffline) {
+      const isPreset = getDemoFactCheckResult(finalInput);
+      if (!isPreset) {
+        setIsOfflineDemoAlertOpen(true);
+        return;
+      }
+    }
+
+    onSubmit(finalInput);
   };
 
   const handleChipSelect = (content: string, format: "text" | "url" | "mixed") => {
@@ -535,13 +655,42 @@ export function SearchHero({
         </div>
       </form>
 
+<<<<<<< HEAD
+      {!loading && (
+        <TrendingChips
+          onSelect={handleChipSelect}
+          disabled={loading}
+          isOpen={isTrendingModalOpen}
+          onOpenChange={setIsTrendingModalOpen}
+        />
+      )}
+
+      <OfflineDemoAlertModal
+        isOpen={isOfflineDemoAlertOpen}
+        onClose={() => setIsOfflineDemoAlertOpen(false)}
+        onOpenSampleTopics={() => {
+          setIsOfflineDemoAlertOpen(false);
+          setIsTrendingModalOpen(true);
+        }}
+      />
+=======
       {!loading && <TrendingChips onSelect={handleChipSelect} disabled={loading} />}
+>>>>>>> origin/dev
 
       <MixedInputNoticeModal
         isOpen={isMixedModalOpen}
         onClose={() => setIsMixedModalOpen(false)}
         detectedUrl={inputMeta.urls[0]}
       />
+<<<<<<< HEAD
+
+      <SecretTeamModal
+        isOpen={isSecretTeamModalOpen}
+        onClose={() => setIsSecretTeamModalOpen(false)}
+      />
+=======
+>>>>>>> origin/dev
     </div>
   );
 }
+

@@ -61,6 +61,18 @@ export function VantaBirdsBackground() {
           scale: 1.0,
           scaleMobile: 1.0,
           backgroundColor: isDark ? 0x070b14 : 0xf8fafc,
+<<<<<<< HEAD
+          color1: isDark ? 0x0284c7 : 0x0369a1,
+          color2: isDark ? 0x1e3a8a : 0x475569,
+          colorMode: "lerpGradient",
+          birdSize: isMobile ? 0.85 : 1.0,
+          wingSpan: isMobile ? 18.0 : 24.0,
+          speedLimit: isMobile ? 2.2 : 2.8,
+          separation: isMobile ? 55.0 : 70.0,
+          alignment: 15.0,
+          cohesion: 12.0,
+          quantity: isMobile ? 2.5 : 3.5,
+=======
           color1: isDark ? 0x00b8e6 : 0x0369a1,
           color2: isDark ? 0x4f46e5 : 0x1d4ed8,
           colorMode: "lerpGradient",
@@ -71,6 +83,7 @@ export function VantaBirdsBackground() {
           alignment: 20.0,
           cohesion: 20.0,
           quantity: isMobile ? 1.5 : 2.2,
+>>>>>>> origin/dev
         });
 
         vantaEffect.current = activeEffect;
@@ -101,8 +114,13 @@ export function VantaBirdsBackground() {
 
     vantaEffect.current.setOptions({
       backgroundColor: isDark ? 0x070b14 : 0xf8fafc,
+<<<<<<< HEAD
+      color1: isDark ? 0x0284c7 : 0x0369a1,
+      color2: isDark ? 0x1e3a8a : 0x475569,
+=======
       color1: isDark ? 0x00b8e6 : 0x0369a1,
       color2: isDark ? 0x4f46e5 : 0x1d4ed8,
+>>>>>>> origin/dev
     });
   }, [isDark]);
 
@@ -113,10 +131,17 @@ export function VantaBirdsBackground() {
     >
       <div
         ref={vantaRef}
+<<<<<<< HEAD
+        className="absolute inset-0 w-full h-full opacity-35 sm:opacity-45 dark:opacity-35 transition-opacity duration-700 transform-gpu will-change-transform"
+      />
+      <div className="absolute inset-0 bg-slate-900/[0.03] dark:bg-[#070b14]/40 pointer-events-none" />
+      <div className="absolute inset-0 bg-gradient-to-b from-transparent via-slate-50/30 to-slate-50/75 dark:via-[#070b14]/30 dark:to-[#070b14]/85 pointer-events-none" />
+=======
         className="absolute inset-0 w-full h-full opacity-40 sm:opacity-45 dark:opacity-30 transition-opacity duration-700 transform-gpu will-change-transform"
       />
       <div className="absolute inset-0 bg-slate-900/5 dark:bg-[#070b14]/50 pointer-events-none" />
       <div className="absolute inset-0 bg-gradient-to-b from-transparent via-slate-50/30 to-slate-50/80 dark:via-[#070b14]/40 dark:to-[#070b14]/90 pointer-events-none" />
+>>>>>>> origin/dev
     </div>
   );
 }
