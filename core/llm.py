@@ -14,33 +14,21 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-load_dotenv()
+load_dotenv(override=True)
 
 API_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
-AI_MODEL = os.getenv("AI_MODEL", "").strip()
+
+def get_ai_model() -> str:
+    load_dotenv(override=True)
+    return os.getenv("AI_MODEL", "").strip()
+
+def get_openrouter_api_key() -> str:
+    load_dotenv(override=True)
+    return os.getenv("OPENROUTER_API_KEY", "").strip()
+
+AI_MODEL = get_ai_model()
+OPENROUTER_API_KEY = get_openrouter_api_key()
 LLM_BACKEND = os.getenv("LLM_BACKEND", "openrouter").strip()
-
-def _planner_timeout() -> float:
-    try:
-        return float(os.getenv("PLANNER_TIMEOUT_SECONDS", "45"))
-    except ValueError:
-        return 45.0
-
-
-def _analyzer_default_timeout() -> float:
-    try:
-        return float(os.getenv("ANALYZER_TIMEOUT_SECONDS", "45"))
-    except ValueError:
-        return 45.0
-
-
-try:
-    import streamlit as st
-    if "OPENROUTER_API_KEY" in st.secrets: OPENROUTER_API_KEY = st.secrets["OPENROUTER_API_KEY"].strip()
-    if "AI_MODEL" in st.secrets: AI_MODEL = st.secrets["AI_MODEL"].strip()
-    if "LLM_BACKEND" in st.secrets: LLM_BACKEND = st.secrets["LLM_BACKEND"].strip()
-except Exception: pass
 
 def get_current_thai_time():
     tz = pytz.timezone('Asia/Bangkok')
@@ -70,6 +58,24 @@ def parse_json_safely(text: str) -> dict:
             except Exception: pass
     return {}
 
+def clean_fact_text(text: str) -> str:
+    if not text:
+        return ""
+    t = str(text)
+
+    t = re.sub(r'(?m)^\s*#{1,6}\s*', '', t)
+    t = re.sub(r'#{1,6}\s*', '', t)
+
+    t = re.sub(r'\[\s*(?:แหล่ง)?(?:ข้อมูล)?อ้างอิง(?:ที่)?\s*[\d,\sและ-]+\s*\]', '', t, flags=re.IGNORECASE)
+    t = re.sub(r'\(\s*(?:แหล่ง)?(?:ข้อมูล)?อ้างอิง(?:ที่)?\s*[\d,\sและ-]+\s*\)', '', t, flags=re.IGNORECASE)
+    t = re.sub(r'\[\s*แหล่งที่\s*[\d,\sและ-]+\s*\]', '', t, flags=re.IGNORECASE)
+    t = re.sub(r'\(\s*แหล่งที่\s*[\d,\sและ-]+\s*\)', '', t, flags=re.IGNORECASE)
+    t = re.sub(r'\[\s*\d+\s*\]', '', t)
+
+    t = re.sub(r'[ \t]+', ' ', t)
+    t = re.sub(r'\n\s*\n+', '\n\n', t)
+    return t.strip()
+
 def validate_ai_response(parsed_dict: dict, raw_output: str = "", force_error: bool = False) -> dict:
     template = {
         "verdict_summary": "ไม่สามารถเปรียบเทียบข้อมูลได้",
@@ -80,20 +86,20 @@ def validate_ai_response(parsed_dict: dict, raw_output: str = "", force_error: b
         "relevant_ref_ids": [],
         "is_error": force_error
     }
-    
+
     if not isinstance(parsed_dict, dict) or not parsed_dict:
         if raw_output:
             template["comparative_analysis"] = f"❌ โครงสร้างข้อมูลผิดพลาด\n\n[Raw Data]:\n{raw_output[:500]}"
         template["is_error"] = True
         return template
-        
+
     try:
         score_str = str(parsed_dict.get("score", 3))
         numbers = re.findall(r'\d+', score_str)
         parsed_dict["score"] = max(1, min(5, int(numbers[0]))) if numbers else 3
     except (ValueError, TypeError, IndexError, KeyError):
         parsed_dict["score"] = 3
-        
+
     try:
         rel_val = parsed_dict.get("relevant_ref_ids", [])
         if isinstance(rel_val, list):
@@ -103,6 +109,19 @@ def validate_ai_response(parsed_dict: dict, raw_output: str = "", force_error: b
             parsed_dict["relevant_ref_ids"] = [int(n) for n in numbers if int(n) != 0]
     except (ValueError, TypeError, KeyError):
         parsed_dict["relevant_ref_ids"] = []
+
+    parsed_dict["verdict_summary"] = clean_fact_text(parsed_dict.get("verdict_summary", ""))
+    parsed_dict["comparative_analysis"] = clean_fact_text(parsed_dict.get("comparative_analysis", ""))
+
+    raw_supp = parsed_dict.get("supported_points", [])
+    if isinstance(raw_supp, str): raw_supp = [raw_supp]
+    cleaned_supp = [clean_fact_text(p) for p in raw_supp if clean_fact_text(p)]
+    parsed_dict["supported_points"] = cleaned_supp or ["ไม่พบข้อมูลที่สอดคล้องกับแหล่งอ้างอิง"]
+
+    raw_conf = parsed_dict.get("conflicting_points", [])
+    if isinstance(raw_conf, str): raw_conf = [raw_conf]
+    cleaned_conf = [clean_fact_text(p) for p in raw_conf if clean_fact_text(p)]
+    parsed_dict["conflicting_points"] = cleaned_conf or ["ไม่พบข้อมูลที่ขัดแย้งกับข้อเท็จจริง"]
 
     score = parsed_dict["score"]
     if score == 5:
@@ -149,7 +168,6 @@ def call_openrouter(prompt: str, system_msg: str, timeout: float = None, model: 
     parsed, _meta = _call_openrouter_with_meta(prompt, system_msg, timeout=timeout, model=model, max_tokens=max_tokens)
     return parsed
 
-
 def _call_openrouter_with_meta(prompt: str, system_msg: str, timeout: float = None, model: str = None, max_tokens: int = None):
     if timeout is None:
         timeout = _analyzer_default_timeout()
@@ -158,10 +176,11 @@ def _call_openrouter_with_meta(prompt: str, system_msg: str, timeout: float = No
             max_tokens = int(os.getenv("LLM_MAX_TOKENS", "2048"))
         except ValueError:
             max_tokens = 2048
-    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
+    api_key = get_openrouter_api_key()
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     provider_sort = os.getenv("OPENROUTER_PROVIDER_SORT", "throughput")
-    target_model = model or AI_MODEL
-    
+    target_model = model or get_ai_model()
+
     payload = {
         "model": target_model,
         "messages": [{"role": "system", "content": system_msg}, {"role": "user", "content": prompt}],
@@ -174,7 +193,7 @@ def _call_openrouter_with_meta(prompt: str, system_msg: str, timeout: float = No
     }
     max_retries = 3
     last_error = None
-    
+
     for attempt in range(max_retries):
         try:
             res = http_client.wall_clock_request(
@@ -185,7 +204,7 @@ def _call_openrouter_with_meta(prompt: str, system_msg: str, timeout: float = No
             data = res.json()
             if "choices" not in data or not data["choices"]:
                 raise ValueError("OpenRouter returned no choices/model available")
-                
+
             choice = data["choices"][0]
             content = choice.get("message", {}).get("content", "")
             finish_reason = choice.get("finish_reason")
@@ -200,16 +219,15 @@ def _call_openrouter_with_meta(prompt: str, system_msg: str, timeout: float = No
             last_error = e
             err_str = str(e)
             logger.error(f"OpenRouter API Error (Attempt {attempt+1}/{max_retries}): {e}")
-            
+
             if "402" in err_str or "Payment Required" in err_str:
                 return {}, {"error": err_str, "truncated": False, "payment_required": True}
-            
+
             if attempt < max_retries - 1:
                 time.sleep(2 ** attempt)
-                
+
     err_str = str(last_error)
     return {}, {"error": err_str, "truncated": False, "payment_required": False}
-
 
 THAI_MONTHS_MAP = {
     'ม.ค.': 1, 'มกราคม': 1, 'ก.พ.': 2, 'กุมภาพันธ์': 2, 'มี.ค.': 3, 'มีนาคม': 3,
@@ -278,23 +296,19 @@ def parse_relative_or_explicit_date(text: str) -> tuple:
 
     return None, "ไม่ระบุในข้อความ", False
 
-
 def analyze_intent_and_plan_search(news_text: str, timeout: float = None) -> tuple:
     text_for_analysis = news_text
-    if "]:\n" in news_text: 
-        text_for_analysis = news_text.split("]:\n")[-1] 
-        
     text_chunk = sanitize_for_api(text_for_analysis[:1500])
     tz = pytz.timezone('Asia/Bangkok')
     current_year_th = datetime.now(tz).year + 543
     if timeout is None:
         timeout = _planner_timeout()
-    
+
     current_date_str = datetime.now(tz).strftime("วันที่ %d %B พ.ศ. %Y เวลา %H:%M น.")
     det_iso, det_display, is_fresh = parse_relative_or_explicit_date(text_chunk)
     post_time_hint = f"ตรวจพบเวลาของโพสต์/ข่าวในข้อความ: {det_display}" if det_display else "เวลาของโพสต์/ข่าว: ไม่ได้ระบุวันที่ชัดเจน (ให้วิเคราะห์จากบริบท)"
 
-    prompt = f"""ข้อความที่ต้องการตรวจสอบ: 
+    prompt = f"""ข้อความที่ต้องการตรวจสอบ:
 "{text_chunk}"
 
 บริบทเวลา:
@@ -341,11 +355,10 @@ def analyze_intent_and_plan_search(news_text: str, timeout: float = None) -> tup
         prompt,
         "Classify content type (PERSONAL_STORY/NEWS_CLAIM/POLICY_ANNOUNCEMENT/GENERAL) and extract exact quotes and entities. NEVER invent keywords absent from the text. STRICTLY THAI LANGUAGE ONLY. NO CHINESE ALLOWED. Output strictly in JSON format.",
         timeout=timeout,
-        model=AI_MODEL,
+        model=get_ai_model(),
         max_tokens=planner_max_tokens,
     )
     return _normalize_planner_response(res_data, text_chunk, current_year_th)
-
 
 _PLATFORM_WORDS = {
     'facebook', 'fb', 'instagram', 'ig', 'tiktok', 'twitter', 'x', 'youtube',
@@ -373,7 +386,6 @@ _GENERIC_WORDS = {
     'พ่อ', 'น้อง', 'พี่', 'ลุง', 'ป้า', 'ตา', 'ยาย',
 }
 
-
 def _sanitize_keywords(keywords: list) -> list:
     cleaned = []
     seen = set()
@@ -387,7 +399,7 @@ def _sanitize_keywords(keywords: list) -> list:
             continue
         if any(nw in k_lower for nw in ['แชร์บทความนี้', 'แชร์บทความ', 'คัดลอกลิงก์', 'messenger', 'linkedin', 'whatsapp']):
             continue
-        # Ignore standalone 1-2 digit numbers (like 21, 00 from clock times)
+
         if re.match(r'^\d{1,2}$', k):
             continue
         if len(k) > 30:
@@ -397,7 +409,6 @@ def _sanitize_keywords(keywords: list) -> list:
         seen.add(k_lower)
         cleaned.append(k)
     return cleaned
-
 
 def _validate_keywords_against_text(keywords: list, text: str) -> list:
     if not text:
@@ -412,16 +423,14 @@ def _validate_keywords_against_text(keywords: list, text: str) -> list:
             valid.append(kw)
     return valid
 
-
 def _extract_numeric_keywords(text: str) -> list:
     nums = re.findall(r'(\d[\d,]*\s*(?:บาท|%|ปี|วัน|เดือน|ล้าน|พัน|หมื่น|แสน|ครั้ง|คน|ราย|จุด|ดอลลาร์|เหรียญ|ล้านบาท))', text, re.IGNORECASE)
     return [n.strip() for n in dict.fromkeys(nums)]
 
-
 def _fallback_keywords(text: str, current_keywords: list, exact_quote: str = "") -> list:
     result = list(current_keywords)
     seen = {k.lower() for k in result}
-    
+
     if exact_quote and len(exact_quote) > 10:
         text_clean = re.sub(r'https?://\S+', ' ', exact_quote)
     else:
@@ -431,9 +440,9 @@ def _fallback_keywords(text: str, current_keywords: list, exact_quote: str = "")
         if num.lower() not in seen:
             result.append(num)
             seen.add(num.lower())
-            
+
     noise_set = _PLATFORM_WORDS | _NOISE_WORDS | _GENERIC_WORDS
-    
+
     if len(result) < 8:
         word_re = re.compile(r'[\u0E00-\u0E7FA-Za-z0-9]{2,30}')
         for m in word_re.findall(text_clean):
@@ -445,18 +454,17 @@ def _fallback_keywords(text: str, current_keywords: list, exact_quote: str = "")
                 break
     return result[:10]
 
-
 def _normalize_planner_response(res_data: dict, text_chunk: str, current_year_th: str) -> dict:
     action = "SEARCH"
     content_type = str(res_data.get("content_type", "NEWS_CLAIM")).upper().strip()
     if content_type not in ("PERSONAL_STORY", "NEWS_CLAIM", "POLICY_ANNOUNCEMENT", "GENERAL"):
         content_type = "NEWS_CLAIM"
-    
+
     topic_keywords = res_data.get("topic_keywords", "")
     if isinstance(topic_keywords, list):
         topic_keywords = " ".join([str(q) for q in topic_keywords])
     topic_keywords = str(topic_keywords)
-    
+
     exact_quote = res_data.get("exact_quote", "")
     if not exact_quote.strip() or len(exact_quote) < 5:
         exact_quote = text_chunk[:100].replace('\n', ' ')
@@ -484,27 +492,27 @@ def _normalize_planner_response(res_data: dict, text_chunk: str, current_year_th
     clean_query = re.sub(r'\s+', ' ', clean_query).strip()
     if len(clean_query) < 3 or len(clean_query.split()) > 10:
         clean_query = " ".join(core_entities[:5]) if core_entities else text_chunk[:80]
-    
+
     locations = res_data.get("locations", [])
     if isinstance(locations, str): locations = [locations]
     locations = [str(l).strip() for l in locations if str(l).strip()]
-    
+
     content_timeline = str(res_data.get("content_timeline", res_data.get("timeline", "ไม่ระบุ"))).strip()
     publish_date_context = str(res_data.get("publish_date_context", "ไม่ระบุ")).strip()
     topic_summary = str(res_data.get("topic_summary", "เปรียบเทียบและวิเคราะห์เนื้อหา")).strip()
-    
+
     det_iso, det_display, is_fresh = parse_relative_or_explicit_date(text_chunk)
     if det_display and det_display != "ไม่ระบุในข้อความ":
         publish_date_context = det_display
         if content_timeline in ["ไม่ระบุ", "", "N/A"] or not re.search(r'\b(25\d{2}|20\d{2})\b', content_timeline):
             content_timeline = det_display
-    
+
     core_keywords_formal = res_data.get("core_keywords_formal", [])
     if isinstance(core_keywords_formal, str): core_keywords_formal = [core_keywords_formal]
     core_keywords_formal = [str(k).strip() for k in core_keywords_formal if str(k).strip()]
     if content_type == "PERSONAL_STORY":
         core_keywords_formal = []
-    
+
     return {
         "action": action,
         "search_query": clean_query,
@@ -521,7 +529,6 @@ def _normalize_planner_response(res_data: dict, text_chunk: str, current_year_th
         "is_fresh_news": is_fresh
     }
 
-
 def _build_analyzer_ref_text(references: list, max_refs: int = 10, max_chars: int = 1000) -> str:
     if not references:
         return "ไม่มีอ้างอิง"
@@ -534,7 +541,6 @@ def _build_analyzer_ref_text(references: list, max_refs: int = 10, max_chars: in
             f"[อ้างอิง {i+1}]: {r.get('title', '')} | วันที่: {r.get('pub_date', 'ไม่ระบุ')}\nเนื้อหา: {snippet}"
         )
     return "\n\n".join(parts)
-
 
 def _build_analyzer_prompt(clean_claim: str, origin_info: str, ref_text: str, current_time_context: str, content_type: str = "NEWS_CLAIM", content_timeline: str = "ไม่ระบุ", publish_date_context: str = "ไม่ระบุ"):
     system_msg = "You are a Senior Fact-Checking Journalist & Ombudsman. STRICTLY THAI LANGUAGE ONLY. DO NOT OUTPUT CHINESE CHARACTERS. Write clear, professional, in-depth, citizen-friendly explanations in THAI. Output strictly valid JSON."
@@ -560,9 +566,9 @@ def _build_analyzer_prompt(clean_claim: str, origin_info: str, ref_text: str, cu
 ⭐ **แนวทางการประเมินและเรียบเรียงบทวิเคราะห์ (Editorial Guidelines):**
 
 1. 🎯 **วิเคราะห์เปรียบเทียบอย่างลึกซึ้ง (In-Depth Comparison):**
-   - **กรณีเรื่องจริง (True / Mostly True):** อธิบายลำดับเหตุการณ์จริง ใครทำอะไร ที่ไหน ตัวเลขความเสียหายหรือข้อเท็จจริงตามที่สื่อหลักรายงาน พร้อมระบุ `[อ้างอิง X]`
+   - **กรณีเรื่องจริง (True / Mostly True):** อธิบายลำดับเหตุการณ์จริง ใครทำอะไร ที่ไหน ตัวเลขความเสียหายหรือข้อเท็จจริงตามที่สื่อหลักรายงาน
    - **กรณีบิดเบือน (Distorted / Misleading):** แยกแยะให้ชัดว่าส่วนใดเป็นเรื่องจริง และส่วนใดที่ถูกแต่งเติม ตัดต่อบริบท หรือชี้นำผิดทิศทาง
-   - **กรณีข่าวปลอม (False / Debunked):** ชี้แจงว่าสื่อหลัก/หน่วยงานทางการได้ออกมาปฏิเสธหรือเตือนภัยอย่างไรบ้าง พร้อมระบุ `[อ้างอิง X]`
+   - **กรณีข่าวปลอม (False / Debunked):** ชี้แจงว่าสื่อหลัก/หน่วยงานทางการได้ออกมาปฏิเสธหรือเตือนภัยอย่างไรบ้าง
 
 2. 🚨 **กฎเหล็กการตรวจจับข่าวปลอม/การหักล้าง (Anti-Fake & Debunk Detection):**
    - ถ้าแหล่งอ้างอิงมีคำว่า 'ข่าวปลอม', 'เตือนภัย', 'ชี้แจงไม่จริง', 'ปฏิเสธ', 'ไม่มีนโยบาย', 'แอบอ้าง' หรือเนื้อหาข่าวปฏิเสธข้อความของผู้ใช้ → ต้องให้ **คะแนน 1 (0% ข้อมูลเท็จ)** หรือ **2 (25% บิดเบือน)** ทันที! ห้ามมองว่าสอดคล้องเพียงเพราะมีคีย์เวิร์ดเรื่องเดียวกันเด็ดขาด!
@@ -577,13 +583,13 @@ def _build_analyzer_prompt(clean_claim: str, origin_info: str, ref_text: str, cu
 
 4. 📋 **โครงสร้างการเขียนตอบใน JSON (ห้ามใช้ภาษาหุ่นยนต์):**
    - `"verdict_summary"`: สรุปผลฟันธงใน 1-2 ประโยคด้วยภาษาที่เข้าใจง่าย กระชับ ตรงไปตรงมา ชี้ชัดว่า "จริง / เท็จ / บิดเบือน" เพราะเหตุใด
-   - `"comparative_analysis"`: เขียนบทวิเคราะห์เชิงลึกแบบแบ่งหัวข้อ Markdown ให้อ่านง่ายและชัดเจน ครอบคลุม 3 ส่วน:
-     📌 **1. สิ่งที่เกิดขึ้นจริง (ลำดับเหตุการณ์และหลักฐานยืนยัน):** อธิบายรายละเอียดของเหตุการณ์จริงตามที่สื่อหลักและทางการรายงาน พร้อมระบุ [อ้างอิง X]
-     🔍 **2. ประเด็นที่ต้องจับตา (จุดที่ถูกต้อง vs จุดที่บิดเบือนหรือเข้าใจผิด):** ชี้แจงเปรียบเทียบให้เห็นชัดเจนว่าข้อความที่นำมาตรวจ ส่วนไหนจริง ส่วนไหนเท็จหรือแต่งเติม
-     💡 **3. สรุปข้อควรระวังและสิ่งที่ควรทราบก่อนแชร์:** สรุปสิ่งที่ผู้รับข้อมูลควรระวัง (เช่น การเตือนภัยมิจฉาชีพ) และแนวทางการตรวจสอบข้อเท็จจริง
-   - `"supported_points"`: รายการประเด็นที่เป็น "ความจริง" เขียนเป็นประโยคที่สมบูรณ์ ชัดเจน พร้อมระบุ `[อ้างอิง X]` (หากไม่มีความจริงเลย ให้ระบุ: `["ไม่พบหลักฐานหรือรายงานข่าวจากสื่อหลักและทางการที่ยืนยันข้อความดังกล่าว"]`)
-   - `"conflicting_points"`: รายการประเด็นที่ "เป็นเท็จ บิดเบือน หรือถูกหักล้าง" เขียนเป็นประโยคที่สมบูรณ์และชัดเจน พร้อมระบุ `[อ้างอิง X]` (หากเป็นเรื่องจริงทั้งหมด ให้ระบุ: `["ข้อมูลมีความถูกต้องสอดคล้องกับรายงานของสื่อหลักและทางการ ไม่พบจุดบิดเบือน"]`)
+   - `"comparative_analysis"`: เขียนบทวิเคราะห์เชิงลึก 3 มิติให้อ่านง่ายและชัดเจน (1. สิ่งที่เกิดขึ้นจริง 2. ประเด็นที่ต้องจับตา 3. ข้อควรระวัง) โดย **ห้ามใส่เครื่องหมายสัญลักษณ์หัวข้อ เช่น ### หรือ ##** และ **ห้ามใส่ข้อความอ้างอิง เช่น [อ้างอิง X] หรือ (แหล่งอ้างอิงที่ X)** ในข้อความเด็ดขาด
+   - `"supported_points"`: รายการประเด็นที่เป็น "ความจริง" เขียนเป็นประโยคที่สมบูรณ์ ชัดเจน (ห้ามใส่ [อ้างอิง X] หรือ แหล่งอ้างอิงที่ X ต่อท้าย)
+   - `"conflicting_points"`: รายการประเด็นที่ "เป็นเท็จ บิดเบือน หรือถูกหักล้าง" เขียนเป็นประโยคที่สมบูรณ์และชัดเจน (ห้ามใส่ [อ้างอิง X] หรือ แหล่งอ้างอิงที่ X ต่อท้าย)
    - `"relevant_ref_ids"`: รายการหมายเลขอ้างอิงที่เกี่ยวข้องจริง เช่น [1, 2, 3]
+
+5. 🔗 **กรณีลิงก์และข้อความไม่ตรงกัน (Topic Mismatch Handling):**
+   - หากพบว่าเนื้อหาในลิงก์ที่แนบมาเป็นคนละเรื่องกับประเด็นข้อความที่ผู้ใช้ระบุ ให้ยึดการตรวจสอบข้อเท็จจริงตาม **"ประเด็นข้อความที่ผู้ใช้สอบถาม"** เป็นหลักเสมอ และระบุชี้แจงในบทวิเคราะห์อย่างโปร่งใสว่า ลิงก์ที่แนบมามีเนื้อหาไม่ตรงกับประเด็นข้อความที่ส่งตรวจ
 
 ⚠️ คำเตือนขั้นเด็ดขาด: ห้ามสร้างข้อความ หรือ Thought process เป็นภาษาจีน (Chinese) หรือภาษาอื่นที่ไม่ใช่ภาษาไทยเด็ดขาด! ตอบกลับเป็นภาษาไทยเท่านั้น!
 
@@ -591,14 +597,13 @@ def _build_analyzer_prompt(clean_claim: str, origin_info: str, ref_text: str, cu
 {{
     "thought": "วิเคราะห์ข้อเท็จจริงและลำดับเหตุการณ์เป็นภาษาไทยอย่างละเอียด",
     "verdict_summary": "สรุปผลการตรวจสอบฉบับเข้าใจง่ายใน 1-2 ประโยค",
-    "supported_points": ["ประเด็นที่ได้รับการยืนยันว่าเป็นความจริงอย่างสมบูรณ์ (พร้อมระบุ [อ้างอิง X])"],
-    "conflicting_points": ["ประเด็นที่เป็นเท็จ บิดเบือน หรือถูกหักล้างอย่างสมบูรณ์ (พร้อมระบุ [อ้างอิง X])"],
-    "comparative_analysis": "บทวิเคราะห์เชิงลึก 3 มิติ (1. สิ่งที่เกิดขึ้นจริง 2. ประเด็นที่ต้องจับตา 3. สรุปข้อควรระวังและสิ่งที่ควรทราบก่อนแชร์) พร้อมระบุ [อ้างอิง X]",
+    "supported_points": ["ประเด็นที่ได้รับการยืนยันว่าเป็นความจริงอย่างสมบูรณ์"],
+    "conflicting_points": ["ประเด็นที่เป็นเท็จ บิดเบือน หรือถูกหักล้างอย่างสมบูรณ์"],
+    "comparative_analysis": "บทวิเคราะห์เชิงลึก 3 มิติ (1. สิ่งที่เกิดขึ้นจริง 2. ประเด็นที่ต้องจับตา 3. สรุปข้อควรระวังและสิ่งที่ควรทราบก่อนแชร์)",
     "relevant_ref_ids": [1, 2],
     "score": ตัวเลข 1-5
 }}"""
     return system_msg, prompt
-
 
 def analyze_fact_checking(news_text: str, references: list, current_date_str: str, source_url: str = "", timeout: float = None, content_type: str = "NEWS_CLAIM", content_timeline: str = "ไม่ระบุ", publish_date_context: str = "ไม่ระบุ") -> dict:
     if timeout is None:
@@ -626,7 +631,7 @@ def analyze_fact_checking(news_text: str, references: list, current_date_str: st
 
     system_msg, prompt = _build_analyzer_prompt(clean_claim, origin_info, ref_text, current_time_context, content_type, content_timeline, publish_date_context)
     _attempt_start = time.time()
-    final_result, meta = _call_openrouter_with_meta(prompt, system_msg, timeout=timeout, model=AI_MODEL, max_tokens=analyzer_max_tokens)
+    final_result, meta = _call_openrouter_with_meta(prompt, system_msg, timeout=timeout, model=get_ai_model(), max_tokens=analyzer_max_tokens)
     _attempt_elapsed = time.time() - _attempt_start
 
     if meta.get("payment_required"):
@@ -642,7 +647,7 @@ def analyze_fact_checking(news_text: str, references: list, current_date_str: st
         retry_budget = max(5.0, timeout - _attempt_elapsed - 1.0)
         compact_ref_text = _build_analyzer_ref_text(references, max_refs=6, max_chars=600)
         compact_system, compact_prompt = _build_analyzer_prompt(clean_claim, origin_info, compact_ref_text, current_time_context, content_type, content_timeline, publish_date_context)
-        retry_result, _retry_meta = _call_openrouter_with_meta(compact_prompt, compact_system, timeout=retry_budget, model=AI_MODEL, max_tokens=analyzer_max_tokens)
+        retry_result, _retry_meta = _call_openrouter_with_meta(compact_prompt, compact_system, timeout=retry_budget, model=get_ai_model(), max_tokens=analyzer_max_tokens)
         if _retry_meta.get("payment_required"):
             return validate_ai_response({"comparative_analysis": "Error 402: OpenRouter API เครดิตหมด (Payment Required) — กรุณาเติมเครดิตที่ openrouter.ai แล้วลองใหม่"}, force_error=True)
         if retry_result:
