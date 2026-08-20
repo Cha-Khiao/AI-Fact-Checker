@@ -18,9 +18,19 @@ const sarabun = Sarabun({
 });
 
 export const metadata: Metadata = {
-  title: "AI Fact-Checker — ระบบตรวจสอบข่าวสารและข้อเท็จจริงอัจฉริยะ",
+  title: "AI Fact-Checker",
   description:
     "วิเคราะห์และตรวจสอบความน่าเชื่อถือของเนื้อหาข่าวสารและโพสต์โซเชียลมีเดียด้วย AI และการสืบค้นคู่ขนานแบบเรียลไทม์",
+  icons: {
+    icon: [
+      { url: "/favicon.svg", type: "image/svg+xml" },
+      { url: "/favicon.ico" },
+      { url: "/icon.png", type: "image/png" },
+    ],
+    apple: [
+      { url: "/apple-touch-icon.png" },
+    ],
+  },
 };
 
 export default function RootLayout({
