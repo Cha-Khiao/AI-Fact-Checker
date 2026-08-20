@@ -1,0 +1,25 @@
+/* TEAM */
+  Lead Developer: Prasopphol18
+  Role: ผู้ออกแบบสถาปัตยกรรม พัฒนาระบบเต็มรูปแบบ และควบคุมการส่งมอบ
+  Title: Lead System Architect & Full-Stack Engineer
+
+  Team Member: Thanasuk13
+  Role: ผู้ร่วมทดสอบระบบ รวบรวมข้อมูลกรณีศึกษา และสนับสนุนทีม
+  Title: Quality Assurance & Research Supporter
+
+  Team Member: Kunlanat38
+  Role: ผู้ร่วมทดสอบระบบ รวบรวมข้อมูลกรณีศึกษา และสนับสนุนทีม
+  Title: Quality Assurance & Research Supporter
+
+/* THANKS */
+  Department: Computer Science (สาขาวิชาวิทยาการคอมพิวเตอร์)
+  University: Sisaket Rajabhat University (มหาวิทยาลัยราชภัฏศรีสะเกษ)
+  Academic Year: 2569 (2026)
+
+/* SITE */
+  Project: AI Fact-Checker
+  Repository: https://github.com/Cha-Khiao/AI-Fact-Checker.git
+  Architecture: Stateless Real-time Multi-Agent RAG
+  Standards: IFCN 5-Tier Verification & Zero-DB
+  Backend: Python 3.11, FastAPI, Uvicorn, curl_cffi
+  Frontend: Next.js 16, TypeScript, Tailwind CSS v4, Three.js WebGL

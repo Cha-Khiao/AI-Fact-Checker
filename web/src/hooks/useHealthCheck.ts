@@ -1,38 +1,95 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 
-export function useHealthCheck(apiBase: string) {
-  const [isHealthy, setIsHealthy] = useState<boolean | null>(null);
+const API_BASE = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").replace(/\/+$/, "");
 
-  useEffect(() => {
-    let mounted = true;
+export type ServerStatus = "checking" | "online" | "demo_offline";
 
-    async function checkHealth() {
-      try {
-        const res = await fetch(`${apiBase}/health`, {
-          method: "GET",
-          headers: { Accept: "application/json" },
-          cache: "no-store",
-        });
-        if (mounted) {
-          setIsHealthy(res.ok);
-        }
-      } catch {
-        if (mounted) {
-          setIsHealthy(false);
-        }
+interface HealthState {
+  status: ServerStatus;
+  lastCheck: number;
+}
+
+let globalState: HealthState = {
+  status: "checking",
+  lastCheck: 0,
+};
+
+const listeners = new Set<() => void>();
+
+function notify() {
+  listeners.forEach((listener) => listener());
+}
+
+let isCheckingInProgress = false;
+
+export async function checkServerHealth(): Promise<ServerStatus> {
+  if (isCheckingInProgress) return globalState.status;
+  isCheckingInProgress = true;
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3000);
+
+    const res = await fetch(`${API_BASE}/health`, {
+      signal: controller.signal,
+      cache: "no-store",
+    });
+    clearTimeout(timeoutId);
+
+    if (res.ok) {
+      const data = await res.json().catch(() => ({}));
+      if (data.status === "healthy" || data.status === "online") {
+        globalState = { status: "online", lastCheck: Date.now() };
+      } else {
+        globalState = { status: "online", lastCheck: Date.now() };
       }
+    } else {
+      globalState = { status: "demo_offline", lastCheck: Date.now() };
     }
+  } catch {
+    globalState = { status: "demo_offline", lastCheck: Date.now() };
+  } finally {
+    isCheckingInProgress = false;
+    notify();
+  }
 
-    checkHealth();
-    const interval = setInterval(checkHealth, 30000);
+  return globalState.status;
+}
 
-    return () => {
-      mounted = false;
-      clearInterval(interval);
-    };
-  }, [apiBase]);
+// Initial health check on client load
+if (typeof window !== "undefined") {
+  checkServerHealth();
+  setInterval(checkServerHealth, 10000);
+}
 
-  return isHealthy;
+function subscribe(callback: () => void) {
+  listeners.add(callback);
+  return () => {
+    listeners.delete(callback);
+  };
+}
+
+function getSnapshot(): HealthState {
+  return globalState;
+}
+
+const SERVER_SNAPSHOT: HealthState = { status: "checking", lastCheck: 0 };
+
+function getServerSnapshot(): HealthState {
+  return SERVER_SNAPSHOT;
+}
+
+export function useHealthCheck() {
+  const state = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+
+  return {
+    status: state.status,
+    isOnline: state.status === "online",
+    isDemoOffline: state.status === "demo_offline",
+    isChecking: state.status === "checking",
+    checkHealth: checkServerHealth,
+    lastCheck: state.lastCheck,
+  };
 }

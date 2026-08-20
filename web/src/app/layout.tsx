@@ -1,12 +1,19 @@
 import type { Metadata } from "next";
-import { Prompt } from "next/font/google";
+import { Prompt, Sarabun } from "next/font/google";
 import "./globals.css";
 import { Providers } from "./providers";
 
 const prompt = Prompt({
-  subsets: ["thai", "latin"],
+  subsets: ["latin"],
   weight: ["300", "400", "500", "600", "700", "800"],
   variable: "--font-prompt",
+  display: "swap",
+});
+
+const sarabun = Sarabun({
+  subsets: ["thai", "latin"],
+  weight: ["300", "400", "500", "600", "700", "800"],
+  variable: "--font-sarabun",
   display: "swap",
 });
 
@@ -22,8 +29,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="th" suppressHydrationWarning className={prompt.variable}>
-      <body className="min-h-screen bg-slate-50 dark:bg-[#070b12] font-sans antialiased text-slate-900 dark:text-slate-100 selection:bg-cyan-500/20 selection:text-cyan-600 dark:selection:text-cyan-300">
+    <html lang="th" suppressHydrationWarning className={`${sarabun.variable} ${prompt.variable}`}>
+      <body className="min-h-screen bg-[#f8fafc] dark:bg-[#070b12] antialiased text-slate-900 dark:text-slate-100 selection:bg-cyan-500/20 selection:text-cyan-600 dark:selection:text-cyan-300 font-normal">
         <Providers>{children}</Providers>
       </body>
     </html>
