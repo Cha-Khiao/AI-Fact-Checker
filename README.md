@@ -26,7 +26,6 @@
 - **สาขาวิชา (Department):** สาขาวิชาวิทยาการคอมพิวเตอร์ (Department of Computer Science)
 - **สถาบันการศึกษา (University):** มหาวิทยาลัยราชภัฏศรีสะเกษ (Sisaket Rajabhat University)
 - **ปีการศึกษา (Academic Year):** 2569 (2026)
-- **คลังซอร์สโค้ด (Repository):** [GitHub: Cha-Khiao/AI-Fact-Checker](https://github.com/Cha-Khiao/AI-Fact-Checker.git)
 - **สิทธิ์การใช้งาน (License):** [MIT License](LICENSE) (Open-source เพื่อการศึกษาและประโยชน์สาธารณะ)
 
 ---
@@ -239,7 +238,38 @@ Final-Project-dev/
 
 ---
 
-## 🧪 8. การทดสอบการทำงานของระบบ (Testing Suite)
+---
+
+## 📡 8. เอกสารประกอบระบบ API หลังบ้าน (Backend API Documentation)
+
+FastAPI ให้บริการเอกสาร API แบบ Interactive อัตโนมัติตามมาตรฐาน OpenAPI:
+
+- 📖 **Swagger UI (Interactive API Docs):** `http://localhost:8000/docs`
+- 📑 **ReDoc (Detailed Schema Reference):** `http://localhost:8000/redoc`
+- 📄 **OpenAPI Specification (JSON):** `http://localhost:8000/openapi.json`
+
+### สรุปรายการ Endpoints หลัก (API Endpoints Summary)
+
+| Method | Endpoint | คำอธิบาย | ตัวอย่างการใช้งาน |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/api/factcheck` | ตรวจสอบข้อเท็จจริงแบบ REST JSON | `{"text": "...", "explicit_url": "..."}` |
+| `GET` | `/api/factcheck/stream` | ตรวจสอบข้อเท็จจริงแบบ Real-time Server-Sent Events (SSE) | `?query=...&explicit_url=...` |
+| `GET` | `/health` | ตรวจสอบสถานะการทำงานและความพร้อมของเซิร์ฟเวอร์ | ตอบกลับ `{"status": "healthy"}` |
+| `GET` | `/api/trends` | ดึงข้อมูลสถิติภาพรวมสำหรับแสดงบนแดชบอร์ด | ข้อมูลสัดส่วนคะแนนและหมวดหมู่ภัยคุกคาม |
+| `GET` | `/api/team` | ข้อมูลทีมผู้พัฒนาและสถาบันการศึกษา | ข้อมูลรายชื่อและบทบาทของผู้จัดทำ |
+
+#### ตัวอย่างการเรียกใช้งาน API ผ่าน cURL:
+
+```bash
+# ตรวจสอบข้อเท็จจริงผ่าน REST API
+curl -X POST "http://localhost:8000/api/factcheck" \
+     -H "Content-Type: application/json" \
+     -d '{"text": "ดื่มน้ำอุ่นช่วยรักษาโรคมะเร็งได้จริงหรือไม่"}'
+```
+
+---
+
+## 🧪 9. การทดสอบการทำงานของระบบ (Testing Suite)
 
 ระบบมีชุดการทดสอบอัตโนมัติ (Automated Unit Tests) เพื่อตรวจสอบความถูกต้องของฟังก์ชันการทำงานหลักและตรรกะการประมวลผล:
 
@@ -255,7 +285,7 @@ Final-Project-dev/
 
 ---
 
-## 🔒 9. ข้อจำกัดและข้อควรทราบ (Limitations & Disclaimer)
+## 🔒 10. ข้อจำกัดและข้อควรทราบ (Limitations & Disclaimer)
 
 1. **ขอบเขตการใช้งาน:** ระบบนี้พัฒนาขึ้นเพื่อเป็นเครื่องมือช่วยสืบค้น เทียบเคียง และวิเคราะห์ข้อเท็จจริงเบื้องต้นสำหรับงานวิชาการและการศึกษา ผลลัพธ์ที่ได้จากการประมวลผลของโมเดลภาษาอาจมีข้อจำกัด และไม่สามารถนำไปใช้อ้างอิงเป็นข้อชี้ขาดทางกฎหมายได้
 2. **การป้องกันอินพุตที่ไม่รองรับ:** ระบบรองรับเฉพาะข้อความและบทความข่าวสาร ไม่รองรับการประมวลผลไฟล์เสียงหรือวิดีโอโดยตรง
@@ -263,6 +293,6 @@ Final-Project-dev/
 
 ---
 
-## 📄 10. สัญญาอนุญาต (License)
+## 📄 11. สัญญาอนุญาต (License)
 
 โครงงานนี้เผยแพร่ภายใต้สัญญาอนุญาต **[MIT License](LICENSE)** สามารถนำไปศึกษา ใช้งาน และพัฒนาต่อยอดได้โดยไม่มีค่าใช้จ่ายเพื่อประโยชน์ทางการศึกษาและสาธารณะ

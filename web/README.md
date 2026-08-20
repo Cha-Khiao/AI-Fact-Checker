@@ -106,7 +106,6 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 - **สาขาวิชา (Department):** สาขาวิชาวิทยาการคอมพิวเตอร์ (Department of Computer Science)
 - **สถาบันการศึกษา (University):** มหาวิทยาลัยราชภัฏศรีสะเกษ (Sisaket Rajabhat University)
 - **ปีการศึกษา (Academic Year):** 2569 (2026)
-- **คลังซอร์สโค้ด (Repository):** [GitHub: Cha-Khiao/AI-Fact-Checker](https://github.com/Cha-Khiao/AI-Fact-Checker.git)
 - **สิทธิ์การใช้งาน (License):** [MIT License](../LICENSE)
 
 ---
